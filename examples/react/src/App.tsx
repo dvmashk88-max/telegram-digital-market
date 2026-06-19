@@ -1,12 +1,11 @@
 /**
- * Example DApp (React) — demo integration with the Antarctic Wallet SDK.
+ * Antarctic Violet (React) — storefront prototype inside Antarctic Wallet.
  *
- * The entire flow lives in one file: types → helpers → SDK init → operations → UI.
  * Standalone run: http://localhost:5175
  * When embedded: the wallet loads this app inside an iframe and passes its
  * origin via the ?parentOrigin=... query parameter.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AWSDK,
   AWInitError,
@@ -19,22 +18,195 @@ import type { AWSession, AWUserContext } from '@antarctic-wallet/aw-sdk';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/** App configuration loaded from public/config.json */
 interface AppConfig {
   id: string;
   name: string;
   requiredScopes: string[];
 }
 
-/** localStorage key for the user-supplied appId override */
+interface LogEntry {
+  time: string;
+  message: string;
+  type: 'info' | 'success' | 'error' | 'warn';
+}
+
+type AppStatus = 'idle' | 'connecting' | 'ready' | 'error';
+type CategoryId = 'telegram' | 'steam' | 'gift-cards' | 'game-top-up';
+type OrderStatus = 'idle' | 'preview';
+
+interface Category {
+  id: CategoryId;
+  name: string;
+  subtitle: string;
+}
+
+interface Product {
+  id: string;
+  category: CategoryId;
+  name: string;
+  description: string;
+  denominations: number[];
+  inputLabel: string;
+  inputPlaceholder: string;
+  accent: string;
+}
+
 const APP_ID_STORAGE_KEY = 'aw-demo:appId';
 
-/**
- * Resolves the appId at startup. Priority:
- *   1. ?appId=... query parameter (one-shot override, also persisted)
- *   2. localStorage (previously entered by the user)
- *   3. null — UI will prompt the user to enter one
- */
+const CATEGORIES: Category[] = [
+  { id: 'gift-cards', name: 'Apple', subtitle: 'Regional gift cards' },
+  { id: 'steam', name: 'Steam', subtitle: 'Wallet top-ups' },
+  { id: 'game-top-up', name: 'Games', subtitle: 'Player balance' },
+  { id: 'telegram', name: 'Telegram', subtitle: 'Stars and Premium' },
+];
+
+const USDT_RATE_RUB = 90;
+
+const PRODUCTS: Product[] = [
+  {
+    id: 'apple-tr',
+    category: 'gift-cards',
+    name: 'Apple TR',
+    description: 'Apple gift card mock code for the TR storefront.',
+    denominations: [5, 10, 25, 50],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'violet',
+  },
+  {
+    id: 'apple-us',
+    category: 'gift-cards',
+    name: 'Apple US',
+    description: 'Apple gift card mock code for the US storefront.',
+    denominations: [10, 25, 50, 100],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'blue',
+  },
+  {
+    id: 'apple-ru',
+    category: 'gift-cards',
+    name: 'Apple RU',
+    description: 'Apple gift card mock code for the RU storefront.',
+    denominations: [5, 10, 25, 50],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'silver',
+  },
+  {
+    id: 'apple-idr',
+    category: 'gift-cards',
+    name: 'Apple IDR',
+    description: 'Apple gift card mock code for the Indonesian storefront.',
+    denominations: [5, 10, 20],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'cyan',
+  },
+  {
+    id: 'roblox-gift-card',
+    category: 'gift-cards',
+    name: 'Roblox Gift Card',
+    description: 'Roblox balance code preview for gifts and purchases.',
+    denominations: [10, 25, 50],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'pink',
+  },
+  {
+    id: 'playstation-gift-card',
+    category: 'gift-cards',
+    name: 'PlayStation Gift Card',
+    description: 'PlayStation Store code preview.',
+    denominations: [10, 25, 50],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'blue',
+  },
+  {
+    id: 'xbox-gift-card',
+    category: 'gift-cards',
+    name: 'Xbox Gift Card',
+    description: 'Xbox wallet card preview.',
+    denominations: [10, 25, 50],
+    inputLabel: 'Delivery note',
+    inputPlaceholder: 'email or note',
+    accent: 'green',
+  },
+  {
+    id: 'steam-top-up',
+    category: 'steam',
+    name: 'Steam Top-Up',
+    description: 'Wallet balance refill preview for Steam accounts.',
+    denominations: [5, 10, 20, 50, 100],
+    inputLabel: 'Steam login',
+    inputPlaceholder: 'steam_login',
+    accent: 'cyan',
+  },
+  {
+    id: 'pubg',
+    category: 'game-top-up',
+    name: 'PUBG',
+    description: 'Mock UC top-up flow for PUBG players.',
+    denominations: [5, 10, 25, 50],
+    inputLabel: 'Player ID',
+    inputPlaceholder: 'player ID',
+    accent: 'gold',
+  },
+  {
+    id: 'free-fire',
+    category: 'game-top-up',
+    name: 'Free Fire',
+    description: 'Mock diamond top-up flow for Free Fire accounts.',
+    denominations: [2, 5, 10, 25],
+    inputLabel: 'Player ID',
+    inputPlaceholder: 'player ID',
+    accent: 'pink',
+  },
+  {
+    id: 'roblox-top-up',
+    category: 'game-top-up',
+    name: 'Roblox Top-Up',
+    description: 'Roblox account balance preview.',
+    denominations: [5, 10, 20, 50],
+    inputLabel: 'Roblox username',
+    inputPlaceholder: 'roblox_username',
+    accent: 'violet',
+  },
+  {
+    id: 'minecraft',
+    category: 'game-top-up',
+    name: 'Minecraft',
+    description: 'Minecraft account credit preview.',
+    denominations: [10, 25, 50],
+    inputLabel: 'Minecraft username',
+    inputPlaceholder: 'minecraft_username',
+    accent: 'green',
+  },
+  {
+    id: 'telegram-stars',
+    category: 'telegram',
+    name: 'Telegram Stars',
+    description: 'Mock Stars package for creators, gifts, and in-app purchases.',
+    denominations: [2, 5, 10, 25, 50],
+    inputLabel: 'Telegram recipient',
+    inputPlaceholder: '@username',
+    accent: 'violet',
+  },
+  {
+    id: 'telegram-premium',
+    category: 'telegram',
+    name: 'Telegram Premium',
+    description: 'Premium subscription preview for Telegram accounts.',
+    denominations: [5, 15, 30],
+    inputLabel: 'Telegram recipient',
+    inputPlaceholder: '@username',
+    accent: 'blue',
+  },
+];
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 function resolveStoredAppId(): string | null {
   const params = new URLSearchParams(window.location.search);
   const fromQuery = params.get('appId');
@@ -53,25 +225,6 @@ function resolveStoredAppId(): string | null {
   }
 }
 
-/** Single Event Log entry — renders in the log panel in real time */
-interface LogEntry {
-  time: string;
-  message: string;
-  type: 'info' | 'success' | 'error' | 'warn';
-}
-
-/** SDK lifecycle: idle → connecting → ready (or error) */
-type AppStatus = 'idle' | 'connecting' | 'ready' | 'error';
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/**
- * Resolves the parent window (wallet) origin for the postMessage channel.
- * Resolution order:
- *   1. ?parentOrigin=... — explicit override via query
- *   2. document.referrer — auto-detected when running inside an iframe
- *   3. localhost wallet dev-server fallback
- */
 function getParentOrigin(): string {
   const params = new URLSearchParams(window.location.search);
   const fromParam = params.get('parentOrigin');
@@ -86,10 +239,6 @@ function getParentOrigin(): string {
   return 'https://localhost:3310';
 }
 
-/**
- * Normalises any SDK error into a human-readable string for the log.
- * Demonstrates how to work with every typed SDK error class.
- */
 function handleSdkError(error: unknown): string {
   if (error instanceof AWOperationError) {
     return `Operation error [${error.errorCode}]: ${error.message} (opId: ${error.operationId})`;
@@ -102,113 +251,23 @@ function handleSdkError(error: unknown): string {
   return String(error);
 }
 
-// ── Backend (B2B) intent demo helpers ─────────────────────────────────────
-//
-// IMPORTANT: real DApps MUST sign and POST these requests from THEIR server.
-// API key/secret here is exposed in the browser ONLY because this is a demo
-// to show wallet integrators what payload and signature the backend expects.
-// Do NOT replicate this pattern in production — leaking api_secret in the
-// browser allows anyone to impersonate the app.
-
-/** Persisted credentials for the backend-intent demo panel */
-interface BackendIntentConfig {
-  apiBase: string;
-  apiKey: string;
-  apiSecret: string;
-  bearerToken: string;
-  telegramUserId: string;
+function getCategoryMarkupRate(categoryId: CategoryId): number {
+  if (categoryId === 'telegram') return 0.15;
+  if (categoryId === 'steam') return 0.2;
+  if (categoryId === 'gift-cards') return 0.3;
+  return 0.25;
 }
 
-/** Pending intent shape returned by GET /api/v2/sdk/operations/intents */
-interface PendingIntent {
-  operationId: string;
-  type: string;
-  status: string;
-  data?: { amount?: string; scopes?: string[] } & Record<string, unknown>;
-  approvedAt?: string | null;
+function formatUsdt(amount: number): string {
+  return `${amount.toFixed(2)} USDT`;
 }
 
-const BACKEND_CONFIG_STORAGE_KEY = 'aw-demo:backendIntent:v2';
-const LEGACY_BACKEND_CONFIG_STORAGE_KEY = 'aw-demo:backendIntent';
-
-function loadBackendConfig(): BackendIntentConfig {
-  try {
-    localStorage.removeItem(LEGACY_BACKEND_CONFIG_STORAGE_KEY);
-  } catch {
-    //
-  }
-  try {
-    const raw = localStorage.getItem(BACKEND_CONFIG_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<BackendIntentConfig>;
-      return {
-        apiBase: parsed.apiBase ?? '',
-        apiKey: parsed.apiKey ?? '',
-        apiSecret: parsed.apiSecret ?? '',
-        bearerToken: parsed.bearerToken ?? '',
-        telegramUserId: parsed.telegramUserId ?? '',
-      };
-    }
-  } catch {
-    //
-  }
-  return { apiBase: '', apiKey: '', apiSecret: '', bearerToken: '', telegramUserId: '' };
+function formatRub(amount: number): string {
+  return `${Math.round(amount).toLocaleString('ru-RU')} ₽`;
 }
 
-function saveBackendConfig(cfg: BackendIntentConfig): void {
-  try {
-    localStorage.setItem(BACKEND_CONFIG_STORAGE_KEY, JSON.stringify(cfg));
-  } catch {
-    //
-  }
-}
-
-interface BackendIntentResponse {
-  data?: { operationId?: string; operation_id?: string };
-  operationId?: string;
-  operation_id?: string;
-}
-
-interface IntentRelayPayload {
-  apiBase: string;
-  apiKey: string;
-  apiSecret: string;
-  type: 'pay' | 'receive';
-  telegramUserId: number;
-  amount: string;
-}
-
-/**
- * Posts the intent payload to OUR backend (`/api/intents`). The backend signs
- * the HMAC and forwards to AW. The browser never touches `api_secret` at rest,
- * but for this demo we still let the user paste it and ship it inside the
- * request body — clearly NOT how a real app should work.
- */
-async function createBackendIntent(
-  payload: IntentRelayPayload,
-): Promise<{ operationId: string; status: number; rawResponse: string }> {
-  const response = await fetch('/api/intents', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-  let parsed: BackendIntentResponse = {};
-  try {
-    parsed = JSON.parse(text) as BackendIntentResponse;
-  } catch {
-    //
-  }
-  const operationId =
-    parsed.data?.operationId ??
-    parsed.data?.operation_id ??
-    parsed.operationId ??
-    parsed.operation_id;
-  if (!operationId) throw new Error(`No operationId in response: ${text}`);
-  return { operationId, status: response.status, rawResponse: text };
+function calculateClientPrice(amount: number, categoryId: CategoryId): number {
+  return Number((amount * (1 + getCategoryMarkupRate(categoryId))).toFixed(2));
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -220,52 +279,24 @@ export function App() {
   const [user, setUser] = useState<AWUserContext | null>(null);
   const [insideWallet, setInsideWallet] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
   const [appId, setAppId] = useState<string | null>(() => resolveStoredAppId());
   const [appIdInput, setAppIdInput] = useState('');
-  const [backendCfg, setBackendCfg] = useState<BackendIntentConfig>(() => loadBackendConfig());
-  const [intentType, setIntentType] = useState<'pay' | 'receive'>('pay');
-  const [intentAmount, setIntentAmount] = useState('5.00');
-  const [pendingIntents, setPendingIntents] = useState<PendingIntent[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<CategoryId>('gift-cards');
+  const [selectedProductId, setSelectedProductId] = useState('apple-tr');
+  const [selectedDenomination, setSelectedDenomination] = useState(5);
+  const [recipient, setRecipient] = useState('');
+  const [orderStatus, setOrderStatus] = useState<OrderStatus>('idle');
 
   const sdkRef = useRef<AWSDK | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
 
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
     setLogs((prev) => [...prev, { time: new Date().toLocaleTimeString(), message, type }]);
   }, []);
 
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs]);
-
   /**
-   * Auto-refresh the pending intents list every 5 seconds whenever the user
-   * has filled in both the API base URL and the bearer token.
-   */
-  useEffect(() => {
-    if (!backendCfg.apiBase || !backendCfg.bearerToken) return;
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      void fetchPendingIntents();
-    };
-    tick();
-    const id = window.setInterval(tick, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backendCfg.apiBase, backendCfg.bearerToken]);
-
-  /**
-   * Full SDK bootstrap — runs once on mount:
-   *   1. Detect whether we're embedded inside the wallet (isInsideWallet)
-   *   2. Load public/config.json with appId and requiredScopes
-   *   3. Create the AWSDK instance with debug/retry/persistSession
-   *   4. Subscribe to every SDK event (ready/error/scopes/session/operation)
-   *   5. sdk.init() — handshake with the host over postMessage
+   * Full SDK bootstrap — preserved from the Antarctic Wallet example:
+   * detects iframe mode, loads app config, opens postMessage channel,
+   * subscribes to SDK events, and performs sdk.init().
    */
   useEffect(() => {
     let destroyed = false;
@@ -293,7 +324,6 @@ export function App() {
       });
       sdkRef.current = sdk;
 
-      // Handshake finished — session token and userContext are available
       sdk.events.on('sdk.ready', (s: AWSession) => {
         addLog('SDK ready!', 'success');
         setStatus('ready');
@@ -301,24 +331,20 @@ export function App() {
         setUser(s.userContext ?? null);
       });
 
-      // Fatal SDK error (init failed, host unreachable, etc.)
       sdk.events.on('sdk.error', ({ code, message }) => {
         addLog(`SDK error: [${code}] ${message}`, 'error');
         setStatus('error');
       });
 
-      // User approved additional scopes
       sdk.events.on('scopes.granted', ({ scopes }) =>
         addLog(`Scopes granted: ${scopes.join(', ')}`, 'success'),
       );
 
-      // Session token rotated (auto-refresh or explicit refreshSession())
       sdk.events.on('session.refreshed', ({ sessionToken, expiresAt }) => {
         addLog(`Session refreshed, expires: ${new Date(expiresAt).toLocaleTimeString()}`);
         setSession((prev) => (prev ? { ...prev, sessionToken, expiresAt } : prev));
       });
 
-      // Session expired — re-initialisation is required
       sdk.events.on('session.expired', () => {
         addLog('Session expired!', 'warn');
         setStatus('error');
@@ -326,7 +352,6 @@ export function App() {
         setUser(null);
       });
 
-      // User declined to confirm the operation in the wallet UI
       sdk.events.on('operation.rejected', ({ operationId, reason }) =>
         addLog(`Operation ${operationId} rejected: ${reason}`, 'warn'),
       );
@@ -349,7 +374,6 @@ export function App() {
     };
   }, [addLog, appId]);
 
-  /** Persist user-supplied appId and trigger SDK bootstrap */
   function submitAppId(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = appIdInput.trim();
@@ -362,7 +386,6 @@ export function App() {
     setAppId(trimmed);
   }
 
-  /** Clear stored appId and reset SDK so the user can enter a new one */
   function changeAppId() {
     try {
       localStorage.removeItem(APP_ID_STORAGE_KEY);
@@ -380,150 +403,46 @@ export function App() {
     setLogs([]);
   }
 
-  // ── Actions ──────────────────────────────────────────────────────────────
+  const visibleProducts = useMemo(
+    () => PRODUCTS.filter((product) => product.category === selectedCategory),
+    [selectedCategory],
+  );
 
-  /** Force-rotate the session token ahead of its expiry */
-  async function refresh() {
-    const sdk = sdkRef.current;
-    if (!sdk) return;
-    setBusy('refresh');
-    try {
-      await sdk.refreshSession();
-      addLog('Session refreshed successfully', 'success');
-    } catch (error) {
-      addLog(`Refresh failed: ${handleSdkError(error)}`, 'error');
-    } finally {
-      setBusy(null);
-    }
+  const selectedProduct = useMemo(
+    () => PRODUCTS.find((product) => product.id === selectedProductId) ?? PRODUCTS[0],
+    [selectedProductId],
+  );
+
+  const supplierPrice = selectedDenomination;
+  const clientPrice = calculateClientPrice(supplierPrice, selectedCategory);
+  const clientPriceRub = clientPrice * USDT_RATE_RUB;
+  const canContinue = recipient.trim().length > 0 && selectedProduct !== null;
+
+  function selectCategory(categoryId: CategoryId) {
+    const firstProduct = PRODUCTS.find((product) => product.category === categoryId);
+    if (!firstProduct) return;
+    setSelectedCategory(categoryId);
+    setSelectedProductId(firstProduct.id);
+    setSelectedDenomination(firstProduct.denominations[0]);
+    setRecipient('');
+    setOrderStatus('idle');
   }
 
-  /** Query the wallet for authoritative session status and granted scopes */
-  async function checkStatus() {
-    const sdk = sdkRef.current;
-    if (!sdk) return;
-    setBusy('status');
-    try {
-      const r = await sdk.status();
-      addLog(
-        `Status: ${r.status}, expires: ${new Date(r.expiresAt).toLocaleTimeString()}, scopes: [${r.grantedScopes.join(', ')}]`,
-        'success',
-      );
-    } catch (error) {
-      addLog(`Status check failed: ${handleSdkError(error)}`, 'error');
-    } finally {
-      setBusy(null);
-    }
+  function selectProduct(product: Product) {
+    setSelectedProductId(product.id);
+    setSelectedDenomination(product.denominations[0]);
+    setRecipient('');
+    setOrderStatus('idle');
   }
 
-  /**
-   * DEMO ONLY — pushes the credentials and intent payload to OUR demo backend
-   * (`/api/intents`), which signs the HMAC and forwards to AW. A real app
-   * would keep `apiSecret` exclusively on its server and never include it in
-   * a request from the browser.
-   */
-  async function runBackendIntent() {
-    if (!backendCfg.apiBase || !backendCfg.apiKey || !backendCfg.apiSecret || !backendCfg.telegramUserId) {
-      addLog('Backend intent demo: fill apiBase, apiKey, apiSecret, telegramUserId first', 'warn');
-      return;
-    }
-    const telegramUserIdNum = Number(backendCfg.telegramUserId);
-    if (!Number.isFinite(telegramUserIdNum) || !Number.isInteger(telegramUserIdNum)) {
-      addLog('Backend intent demo: telegramUserId must be an integer', 'warn');
-      return;
-    }
-    const payload: IntentRelayPayload = {
-      apiBase: backendCfg.apiBase,
-      apiKey: backendCfg.apiKey,
-      apiSecret: backendCfg.apiSecret,
-      type: intentType,
-      telegramUserId: telegramUserIdNum,
-      amount: intentAmount,
-    };
-    setBusy('b2b');
-    addLog(`[B2B ${intentType}] POST /api/intents (relayed to ${backendCfg.apiBase})`);
-    try {
-      const { operationId, status, rawResponse } = await createBackendIntent(payload);
-      addLog(`[B2B ${intentType}] HTTP ${status} → ${rawResponse.slice(0, 200)}`, 'success');
-      addLog(
-        `[B2B ${intentType}] operationId: ${operationId}. Wait for the wallet shell + webhook to deliver the result.`,
-        'success',
-      );
-    } catch (error) {
-      addLog(`[B2B ${intentType}] failed: ${handleSdkError(error)}`, 'error');
-    } finally {
-      setBusy(null);
-    }
+  function previewOrder() {
+    if (!canContinue) return;
+    setOrderStatus('preview');
   }
-
-  /**
-   * GET /api/v2/sdk/operations/intents — lists pending intents for the current
-   * user. Requires the user's `Authorization: Bearer <jwt>` token.
-   */
-  async function fetchPendingIntents() {
-    if (!backendCfg.apiBase) {
-      addLog('Backend intent list: fill API Base URL first', 'warn');
-      return;
-    }
-    if (!backendCfg.bearerToken) {
-      addLog('Backend intent list: fill Bearer Token first', 'warn');
-      return;
-    }
-    setBusy('intents');
-    const url = `${backendCfg.apiBase.replace(/\/$/, '')}/api/v2/sdk/operations/intents`;
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${backendCfg.bearerToken}`,
-        },
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
-      const parsed = JSON.parse(text) as { data?: PendingIntent[] };
-      const list = Array.isArray(parsed.data) ? parsed.data : [];
-      setPendingIntents(list);
-    } catch (error) {
-      addLog(`[Intents] failed: ${handleSdkError(error)}`, 'error');
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  /** Open wallet's approve/reject sheet for the chosen intent */
-  async function approveIntent(intent: PendingIntent) {
-    const sdk = sdkRef.current;
-    if (!sdk) {
-      addLog('SDK not ready', 'warn');
-      return;
-    }
-    addLog(`[Intents] requesting confirmation for ${intent.operationId}...`);
-    try {
-      const result = await sdk.operations.requestConfirmation(intent.operationId);
-      addLog(
-        `[Intents] ${intent.operationId} → ${result.status}${result.txId ? `, txId: ${result.txId}` : ''}`,
-        'success',
-      );
-      void fetchPendingIntents();
-    } catch (error) {
-      addLog(`[Intents] confirmation failed: ${handleSdkError(error)}`, 'error');
-    }
-  }
-
-  function updateBackendCfg(patch: Partial<BackendIntentConfig>) {
-    setBackendCfg((prev) => {
-      const next = { ...prev, ...patch };
-      saveBackendConfig(next);
-      return next;
-    });
-  }
-
-  // ── UI ───────────────────────────────────────────────────────────────────
-
-  const disabled = !session;
 
   if (!appId) {
     return (
-      <div className="app">
+      <div className="app app--narrow">
         <header className="header">
           <h1 className="header__title">Example DApp (React)</h1>
           <div className="header__badges">
@@ -554,189 +473,136 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="header">
-        <h1 className="header__title">{config?.name ?? 'Loading...'}</h1>
-        <div className="header__badges">
-          <span className={insideWallet ? 'badge -inside' : 'badge -outside'}>
-            {insideWallet ? 'In Wallet' : 'Standalone'}
-          </span>
-          <span className={`status-dot -${status}`} />
-          <span className="status-label">{status}</span>
-          <span className="app-id">appId: {appId}</span>
+      <header className="violet-header">
+        <div>
+          <div className="eyebrow">Antarctic Apps</div>
+          <h1 className="violet-title">{config?.name ?? 'Antarctic Violet'}</h1>
+          <p className="violet-copy">
+            Premium digital goods storefront prototype for Telegram, Steam, gift cards,
+            and game top-ups.
+          </p>
+        </div>
+        <div className="wallet-card">
+          <div className="wallet-card__row">
+            <span className={insideWallet ? 'badge -inside' : 'badge -outside'}>
+              {insideWallet ? 'In Wallet' : 'Standalone'}
+            </span>
+            <span className={`status-dot -${status}`} />
+            <span className="status-label">{status}</span>
+          </div>
+          <div className="wallet-card__meta">
+            {user?.displayName ?? (session ? 'Wallet session active' : 'Awaiting wallet session')}
+          </div>
           <button className="btn-link" onClick={changeAppId} type="button">
-            Change
+            Change App ID
           </button>
         </div>
       </header>
 
-      {user && (
-        <section className="panel">
-          <div className="user">
-            {user.avatarUrl && <img src={user.avatarUrl} alt="" className="user__avatar" />}
+      <nav className="category-tabs" aria-label="Product categories">
+        {CATEGORIES.map((category) => (
+          <button
+            key={category.id}
+            className={`category-tab ${selectedCategory === category.id ? '-active' : ''}`}
+            type="button"
+            onClick={() => selectCategory(category.id)}
+          >
+            <span>{category.name}</span>
+            <small>{category.subtitle}</small>
+          </button>
+        ))}
+      </nav>
+
+      <main className="storefront">
+        <section className="catalog">
+          <div className="section-heading">
+            <span>Catalog</span>
+            <strong>{visibleProducts.length} mock products</strong>
+          </div>
+          <div className="product-grid">
+            {visibleProducts.map((product) => (
+              <button
+                key={product.id}
+                className={`product-card -${product.accent} ${
+                  selectedProduct.id === product.id ? '-selected' : ''
+                }`}
+                type="button"
+                onClick={() => selectProduct(product)}
+              >
+                <span className="product-card__shine" />
+                <span className="product-card__name">{product.name}</span>
+                <span className="product-card__description">{product.description}</span>
+                <span className="product-card__footer">
+                  <span>от {formatUsdt(product.denominations[0])}</span>
+                  <span>Mock</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <aside className="checkout-panel">
+          <div className="section-heading">
+            <span>Order</span>
+            <strong>Preview only</strong>
+          </div>
+
+          <div className={`selected-product -${selectedProduct.accent}`}>
             <div>
-              {user.displayName && <div className="user__name">{user.displayName}</div>}
-              {user.walletAddress && <div className="user__wallet">{user.walletAddress}</div>}
-              {user.userId && <div className="user__id">ID: {user.userId}</div>}
+              <span className="selected-product__label">Selected product</span>
+              <strong>{selectedProduct.name}</strong>
             </div>
+            <span className="selected-product__pill">{selectedCategory.replace('-', ' ')}</span>
           </div>
-        </section>
-      )}
 
-      {session && (
-        <section className="panel">
-          <div className="panel__title">Session</div>
-          <div className="info-grid">
-            <span className="info-grid__label">Token</span>
-            <span className="info-grid__value">{session.sessionToken.slice(0, 20)}...</span>
-            <span className="info-grid__label">Expires</span>
-            <span className="info-grid__value">
-              {new Date(session.expiresAt).toLocaleTimeString()}
-            </span>
-          </div>
-          <div className="scopes">
-            {session.grantedScopes.map((s) => (
-              <span key={s} className="scope-chip">
-                {s}
-              </span>
+          <label className="field-label">Nominal</label>
+          <div className="denomination-grid">
+            {selectedProduct.denominations.map((amount) => (
+              <button
+                key={amount}
+                className={`denomination ${selectedDenomination === amount ? '-active' : ''}`}
+                type="button"
+                onClick={() => {
+                  setSelectedDenomination(amount);
+                  setOrderStatus('idle');
+                }}
+              >
+                {formatUsdt(amount)}
+              </button>
             ))}
           </div>
-        </section>
-      )}
 
-      <div className="actions-grid">
-        <section className="panel">
-          <div className="panel__title">Session</div>
-          <button className="btn -ghost" disabled={disabled || busy === 'refresh'} onClick={refresh}>
-            Refresh
+          <label className="field-label" htmlFor="recipient">
+            {selectedProduct.inputLabel}
+          </label>
+          <input
+            id="recipient"
+            className="input"
+            type="text"
+            placeholder={selectedProduct.inputPlaceholder}
+            value={recipient}
+            onChange={(e) => {
+              setRecipient(e.target.value);
+              setOrderStatus('idle');
+            }}
+          />
+
+          <div className="total-box">
+            <span className="total-box__label">Итого к оплате</span>
+            <strong className="total-box__amount">{formatUsdt(clientPrice)}</strong>
+            <span className="total-box__rub">≈ {formatRub(clientPriceRub)}</span>
+            <span className="total-box__note">Сервисный сбор включён</span>
+          </div>
+
+          <button className="btn -accent" type="button" disabled={!canContinue} onClick={previewOrder}>
+            Continue
           </button>
-          <button className="btn -ghost" disabled={disabled || busy === 'status'} onClick={checkStatus}>
-            Check Status
-          </button>
-        </section>
 
-      </div>
-
-      <section className="panel">
-        <div className="panel__title">Backend Intent (DEMO ONLY)</div>
-        <div className="warn-box">
-          ⚠️ TESTING ONLY. Real apps NEVER send <code>apiSecret</code> from
-          the browser — the secret stays on YOUR server. Here we relay through
-          our demo backend (<code>/api/intents</code>) just to make the flow
-          observable end-to-end.
-        </div>
-        <label className="field-label">API Base URL</label>
-        <input
-          className="input"
-          type="text"
-          placeholder="auto-derived from wallet origin"
-          value={backendCfg.apiBase}
-          onChange={(e) => updateBackendCfg({ apiBase: e.target.value })}
-        />
-        <label className="field-label">API Key</label>
-        <input
-          className="input"
-          type="text"
-          placeholder="X-Sdk-App-Key"
-          value={backendCfg.apiKey}
-          onChange={(e) => updateBackendCfg({ apiKey: e.target.value })}
-        />
-        <label className="field-label">API Secret</label>
-        <input
-          className="input"
-          type="password"
-          placeholder="HMAC secret"
-          value={backendCfg.apiSecret}
-          onChange={(e) => updateBackendCfg({ apiSecret: e.target.value })}
-        />
-        <label className="field-label">Bearer Token (for intents list)</label>
-        <input
-          className="input"
-          type="password"
-          placeholder="user JWT for Authorization header"
-          value={backendCfg.bearerToken}
-          onChange={(e) => updateBackendCfg({ bearerToken: e.target.value })}
-        />
-        <label className="field-label">Telegram User ID</label>
-        <input
-          className="input"
-          type="text"
-          placeholder="target user telegram id"
-          value={backendCfg.telegramUserId}
-          onChange={(e) => updateBackendCfg({ telegramUserId: e.target.value })}
-        />
-        <label className="field-label">Intent Type</label>
-        <select
-          className="input"
-          value={intentType}
-          onChange={(e) => setIntentType(e.target.value as 'pay' | 'receive')}
-        >
-          <option value="pay">pay</option>
-          <option value="receive">receive</option>
-        </select>
-        <label className="field-label">Amount (USDT)</label>
-        <input
-          className="input"
-          type="text"
-          placeholder="5.00"
-          value={intentAmount}
-          onChange={(e) => setIntentAmount(e.target.value)}
-        />
-        <button
-          className="btn -accent"
-          disabled={busy === 'b2b'}
-          onClick={runBackendIntent}
-        >
-          {busy === 'b2b' ? '...' : `Send ${intentType} intent`}
-        </button>
-      </section>
-
-      <section className="panel">
-        <div className="panel__title">Pending Intents</div>
-        <button
-          className="btn -ghost"
-          disabled={busy === 'intents'}
-          onClick={fetchPendingIntents}
-        >
-          {busy === 'intents' ? '...' : 'Refresh List'}
-        </button>
-        {pendingIntents.length === 0 ? (
-          <div className="hint">No intents loaded.</div>
-        ) : (
-          <ul className="intent-list">
-            {pendingIntents.map((it) => (
-              <li key={it.operationId}>
-                <button
-                  className="intent-item"
-                  type="button"
-                  onClick={() => approveIntent(it)}
-                  title="Open wallet sheet to approve or reject"
-                >
-                  <span className="intent-item__type">{it.type}</span>
-                  <span className="intent-item__id">
-                    {it.data?.amount
-                      ? `${it.data.amount} USDT`
-                      : it.data?.scopes?.length
-                        ? it.data.scopes.join(', ')
-                        : `${it.operationId.slice(0, 8)}…`}
-                  </span>
-                  <span className="intent-item__status">{it.status}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="panel__title">Event Log</div>
-        <div ref={logRef} className="log">
-          {logs.map((e, i) => (
-            <div key={i} className={`log__line -${e.type}`}>
-              <span className="log__time">[{e.time}]</span> {e.message}
-            </div>
-          ))}
-        </div>
-      </section>
+          {orderStatus === 'preview' && (
+            <div className="success-note">Order preview ready. Payment integration is next.</div>
+          )}
+        </aside>
+      </main>
     </div>
   );
 }

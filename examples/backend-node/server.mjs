@@ -10,10 +10,12 @@
  *
  * Endpoints:
  *   POST /api/intents → forwards body to AW `/api/apps/v1/intents`
+ *   GET  /api/fazercards/giftcards → proxies FazerCards gift cards
  *   GET  /health      → liveness probe
  *
  * Required env (see .env.example):
  *   AW_API_BASE, AW_API_KEY, AW_API_SECRET
+ *   FAZERCARDS_API_BASE, FAZERCARDS_API_KEY
  *   PORT (default 3351)
  *   ALLOWED_ORIGIN (default *)
  *   STATIC_DIR (optional — serve files from this folder for non-API paths)
@@ -25,6 +27,8 @@ const PORT = Number.parseInt(process.env.PORT ?? '3351', 10);
 const AW_API_BASE = process.env.AW_API_BASE ?? '';
 const AW_API_KEY = process.env.AW_API_KEY ?? '';
 const AW_API_SECRET = process.env.AW_API_SECRET ?? '';
+const FAZERCARDS_API_BASE = process.env.FAZERCARDS_API_BASE ?? '';
+const FAZERCARDS_API_KEY = process.env.FAZERCARDS_API_KEY ?? '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const STATIC_DIR = process.env.STATIC_DIR ?? '';
 
@@ -33,6 +37,12 @@ const VALID_TYPES = new Set(['pay', 'receive', 'scopes']);
 if (!AW_API_BASE || !AW_API_KEY || !AW_API_SECRET) {
   console.warn(
     '[boot] Missing AW_API_BASE / AW_API_KEY / AW_API_SECRET — /api/intents will return 500 until they are set.',
+  );
+}
+
+if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {
+  console.warn(
+    '[boot] Missing FAZERCARDS_API_BASE / FAZERCARDS_API_KEY — /api/fazercards/giftcards will return 500 until they are set.',
   );
 }
 
@@ -102,6 +112,32 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/fazercards/giftcards', async (_req, res) => {
+  if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {
+    return res.status(500).json({
+      error: 'MISSING_FAZERCARDS_CONFIG',
+      hint: 'Set FAZERCARDS_API_BASE and FAZERCARDS_API_KEY in Railway Variables.',
+    });
+  }
+  const url = `${FAZERCARDS_API_BASE.replace(/\/$/, '')}/api/v2/giftcards`;
+  try {
+    const upstream = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-API-Key': FAZERCARDS_API_KEY,
+      },
+    });
+    const body = await upstream.text();
+    res
+      .status(upstream.status)
+      .type(upstream.headers.get('content-type') || 'application/json')
+      .send(body);
+  } catch (error) {
+    console.error('[fazercards] giftcards upstream error', error);
+    res.status(502).json({ error: 'FAZERCARDS_UPSTREAM_FAILURE' });
+  }
+});
 
 app.post('/api/intents', express.json({ limit: '64kb' }), async (req, res) => {
   // DEMO ONLY: this server accepts apiKey/apiSecret directly from the request

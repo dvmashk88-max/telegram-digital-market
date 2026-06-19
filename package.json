@@ -15,6 +15,10 @@
     "example": "examples"
   },
   "scripts": {
+    "start": "node examples/backend-node/server.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
   }
 }

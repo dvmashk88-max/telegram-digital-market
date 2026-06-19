@@ -301,6 +301,24 @@ button {
   font-size: 11px;
 }
 
+.catalog-state {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(142, 231, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(34, 211, 238, 0.08);
+  color: #bfefff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.catalog-state.-error {
+  border-color: rgba(251, 113, 133, 0.24);
+  background: rgba(251, 113, 133, 0.08);
+  color: #ffc4ce;
+}
+
 .product-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -366,6 +384,10 @@ button {
   color: #bdb7dd;
   font-size: 13px;
   line-height: 1.45;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .product-card__footer {

@@ -51,7 +51,22 @@ interface Product {
   accent: string;
 }
 
+interface VioletCatalogItem {
+  productId: string;
+  source: string;
+  externalId: string | null;
+  categoryId: string | null;
+  cardId: string | null;
+  name: string;
+  note: string | null;
+  denominations: number[];
+  supplierPrice: string | number | null;
+  available: boolean;
+}
+
 const APP_ID_STORAGE_KEY = 'aw-demo:appId';
+const VIOLET_CATALOG_ENDPOINT =
+  'https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog';
 
 const CATEGORIES: Category[] = [
   { id: 'gift-cards', name: 'Apple', subtitle: 'Regional gift cards' },
@@ -286,6 +301,9 @@ export function App() {
   const [selectedDenomination, setSelectedDenomination] = useState(5);
   const [recipient, setRecipient] = useState('');
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('idle');
+  const [violetCatalog, setVioletCatalog] = useState<Record<string, VioletCatalogItem>>({});
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
 
   const sdkRef = useRef<AWSDK | null>(null);
 
@@ -374,6 +392,40 @@ export function App() {
     };
   }, [addLog, appId]);
 
+  useEffect(() => {
+    if (!appId) return;
+    let cancelled = false;
+
+    async function loadVioletCatalog() {
+      setCatalogLoading(true);
+      setCatalogError(null);
+      try {
+        const response = await fetch(VIOLET_CATALOG_ENDPOINT, {
+          headers: { Accept: 'application/json' },
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 160)}`);
+        const parsed = JSON.parse(text) as { items?: VioletCatalogItem[] };
+        const items = Array.isArray(parsed.items) ? parsed.items : [];
+        const nextCatalog = Object.fromEntries(items.map((item) => [item.productId, item]));
+        if (cancelled) return;
+        setVioletCatalog(nextCatalog);
+      } catch (error) {
+        if (cancelled) return;
+        setVioletCatalog({});
+        setCatalogError(error instanceof Error ? error.message : 'Unable to load FazerCards data.');
+      } finally {
+        if (!cancelled) setCatalogLoading(false);
+      }
+    }
+
+    void loadVioletCatalog();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appId]);
+
   function submitAppId(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = appIdInput.trim();
@@ -409,9 +461,12 @@ export function App() {
   );
 
   const selectedProduct = useMemo(
-    () => PRODUCTS.find((product) => product.id === selectedProductId) ?? PRODUCTS[0],
-    [selectedProductId],
+    () => PRODUCTS.find((product) => product.id === selectedProductId) ?? visibleProducts[0] ?? PRODUCTS[0],
+    [selectedProductId, visibleProducts],
   );
+  const selectedProductMeta = violetCatalog[selectedProduct.id] ?? null;
+  const selectedProductDenominations =
+    selectedProductMeta?.denominations.length ? selectedProductMeta.denominations : selectedProduct.denominations;
 
   const supplierPrice = selectedDenomination;
   const clientPrice = calculateClientPrice(supplierPrice, selectedCategory);
@@ -429,8 +484,10 @@ export function App() {
   }
 
   function selectProduct(product: Product) {
+    const meta = violetCatalog[product.id] ?? null;
+    const denominations = meta?.denominations.length ? meta.denominations : product.denominations;
     setSelectedProductId(product.id);
-    setSelectedDenomination(product.denominations[0]);
+    setSelectedDenomination(denominations[0]);
     setRecipient('');
     setOrderStatus('idle');
   }
@@ -439,6 +496,23 @@ export function App() {
     if (!canContinue) return;
     setOrderStatus('preview');
   }
+
+  useEffect(() => {
+    if (visibleProducts.length === 0) return;
+    if (visibleProducts.some((product) => product.id === selectedProductId)) return;
+    setSelectedProductId(visibleProducts[0].id);
+    setSelectedDenomination(
+      violetCatalog[visibleProducts[0].id]?.denominations[0] ?? visibleProducts[0].denominations[0],
+    );
+    setRecipient('');
+    setOrderStatus('idle');
+  }, [selectedProductId, violetCatalog, visibleProducts]);
+
+  useEffect(() => {
+    if (selectedProductDenominations.includes(selectedDenomination)) return;
+    setSelectedDenomination(selectedProductDenominations[0]);
+    setOrderStatus('idle');
+  }, [selectedDenomination, selectedProductDenominations]);
 
   if (!appId) {
     return (
@@ -517,27 +591,42 @@ export function App() {
         <section className="catalog">
           <div className="section-heading">
             <span>Catalog</span>
-            <strong>{visibleProducts.length} mock products</strong>
+            <strong>
+              {Object.keys(violetCatalog).length > 0
+                ? `${visibleProducts.length} products`
+                : `${visibleProducts.length} mock products`}
+            </strong>
           </div>
+          {(catalogLoading || catalogError) && (
+            <div className={`catalog-state ${catalogError ? '-error' : ''}`}>
+              {catalogLoading
+                ? 'Syncing FazerCards data for current cards...'
+                : `FazerCards unavailable. Current cards stay in mock fallback. ${catalogError}`}
+            </div>
+          )}
           <div className="product-grid">
-            {visibleProducts.map((product) => (
-              <button
-                key={product.id}
-                className={`product-card -${product.accent} ${
-                  selectedProduct.id === product.id ? '-selected' : ''
-                }`}
-                type="button"
-                onClick={() => selectProduct(product)}
-              >
-                <span className="product-card__shine" />
-                <span className="product-card__name">{product.name}</span>
-                <span className="product-card__description">{product.description}</span>
-                <span className="product-card__footer">
-                  <span>от {formatUsdt(product.denominations[0])}</span>
-                  <span>Mock</span>
-                </span>
-              </button>
-            ))}
+            {visibleProducts.map((product) => {
+              const meta = violetCatalog[product.id] ?? null;
+              const denominations = meta?.denominations.length ? meta.denominations : product.denominations;
+              return (
+                <button
+                  key={product.id}
+                  className={`product-card -${product.accent} ${
+                    selectedProduct.id === product.id ? '-selected' : ''
+                  }`}
+                  type="button"
+                  onClick={() => selectProduct(product)}
+                >
+                  <span className="product-card__shine" />
+                  <span className="product-card__name">{meta?.name ?? product.name}</span>
+                  <span className="product-card__description">{meta?.note ?? product.description}</span>
+                  <span className="product-card__footer">
+                    <span>от {formatUsdt(denominations[0])}</span>
+                    <span>{meta ? 'Live' : 'Mock'}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </section>
 
@@ -550,14 +639,16 @@ export function App() {
           <div className={`selected-product -${selectedProduct.accent}`}>
             <div>
               <span className="selected-product__label">Selected product</span>
-              <strong>{selectedProduct.name}</strong>
+              <strong>{selectedProductMeta?.name ?? selectedProduct.name}</strong>
             </div>
-            <span className="selected-product__pill">{selectedCategory.replace('-', ' ')}</span>
+            <span className="selected-product__pill">
+              {selectedProductMeta?.externalId ?? selectedCategory.replace('-', ' ')}
+            </span>
           </div>
 
           <label className="field-label">Nominal</label>
           <div className="denomination-grid">
-            {selectedProduct.denominations.map((amount) => (
+            {selectedProductDenominations.map((amount) => (
               <button
                 key={amount}
                 className={`denomination ${selectedDenomination === amount ? '-active' : ''}`}

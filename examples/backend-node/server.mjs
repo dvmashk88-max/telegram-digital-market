@@ -12,9 +12,11 @@
  *   POST /api/intents → forwards body to AW `/api/apps/v1/intents`
  *   GET  /api/fazercards/giftcards → proxies FazerCards gift cards
  *   GET  /api/fazercards/violet-catalog → normalized read-only Violet catalog matches
+ *   GET  /config.json → frontend config with AW_APP_ID injected at runtime
  *   GET  /health      → liveness probe
  *
  * Required env (see .env.example):
+ *   AW_APP_ID
  *   AW_API_BASE, AW_API_KEY, AW_API_SECRET
  *   FAZERCARDS_API_BASE, FAZERCARDS_API_KEY
  *   PORT (default 3351)
@@ -23,11 +25,12 @@
  */
 import express from 'express';
 import { createHash, createHmac } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3351', 10);
+const AW_APP_ID = process.env.AW_APP_ID ?? '';
 const AW_API_BASE = process.env.AW_API_BASE ?? '';
 const AW_API_KEY = process.env.AW_API_KEY ?? '';
 const AW_API_SECRET = process.env.AW_API_SECRET ?? '';
@@ -111,6 +114,10 @@ if (!AW_API_BASE || !AW_API_KEY || !AW_API_SECRET) {
   console.warn(
     '[boot] Missing AW_API_BASE / AW_API_KEY / AW_API_SECRET — /api/intents will return 500 until they are set.',
   );
+}
+
+if (!AW_APP_ID) {
+  console.warn('[boot] Missing AW_APP_ID — /config.json will not have a registered wallet app id.');
 }
 
 if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {
@@ -288,6 +295,30 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/config.json', (_req, res) => {
+  const configPath = STATIC_DIR ? path.join(STATIC_DIR, 'config.json') : '';
+  if (!configPath || !existsSync(configPath)) {
+    return res.status(404).json({ error: 'CONFIG_NOT_FOUND' });
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    const fallbackId = typeof config.id === 'string' ? config.id : '';
+    const resolvedAppId = AW_APP_ID || fallbackId;
+    res.json({
+      ...config,
+      id: resolvedAppId,
+      diagnostics: {
+        awAppIdPresent: Boolean(AW_APP_ID),
+        appIdSource: AW_APP_ID ? 'env' : fallbackId ? 'fallback' : 'missing',
+      },
+    });
+  } catch (error) {
+    console.error('[config] failed to read frontend config', error);
+    res.status(500).json({ error: 'CONFIG_READ_FAILED' });
+  }
+});
 
 app.get('/api/fazercards/giftcards', async (_req, res) => {
   if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {

@@ -22,6 +22,10 @@ interface AppConfig {
   id: string;
   name: string;
   requiredScopes: string[];
+  diagnostics?: {
+    awAppIdPresent?: boolean;
+    appIdSource?: 'env' | 'fallback' | 'missing';
+  };
 }
 
 interface LogEntry {
@@ -65,7 +69,6 @@ interface VioletCatalogItem {
 }
 
 const APP_ID_STORAGE_KEY = 'aw-demo:appId';
-const LEGACY_DEMO_APP_ID = 'dev';
 const VIOLET_CATALOG_ENDPOINT =
   'https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog';
 
@@ -243,23 +246,8 @@ function getParentOrigin(insideWallet: boolean): string | null {
 
 function resolveSdkAppId(configId: string, requestedAppId: string | null, insideWallet: boolean): string {
   const params = new URLSearchParams(window.location.search);
-  const walletAppId =
-    params.get('walletAppId') ??
-    params.get('awAppId') ??
-    params.get('sdkAppId') ??
-    params.get('registeredAppId') ??
-    params.get('app_id') ??
-    params.get('applicationId') ??
-    params.get('miniAppId');
-  if (walletAppId) return walletAppId;
-
-  const urlAppId = params.get('appId');
-  if (insideWallet) {
-    if (urlAppId && urlAppId !== LEGACY_DEMO_APP_ID) return urlAppId;
-    return configId;
-  }
-
-  return requestedAppId ?? configId;
+  if (insideWallet) return configId;
+  return requestedAppId ?? params.get('appId') ?? configId;
 }
 
 function handleSdkError(error: unknown): string {
@@ -309,6 +297,8 @@ export function App() {
   const [sdkDiagnostics, setSdkDiagnostics] = useState({
     appId: '',
     requestedAppId: '',
+    awAppIdPresent: false,
+    appIdSource: 'missing' as 'env' | 'fallback' | 'missing',
     origin: '',
     parentOrigin: '',
     scopes: [] as string[],
@@ -367,11 +357,15 @@ export function App() {
       setSdkDiagnostics({
         appId: sdkAppId,
         requestedAppId: appId ?? '',
+        awAppIdPresent: Boolean(cfg.diagnostics?.awAppIdPresent),
+        appIdSource: cfg.diagnostics?.appIdSource ?? (cfg.id ? 'fallback' : 'missing'),
         origin: window.location.origin,
         parentOrigin,
         scopes,
       });
       addLog(`SDK init appId: ${sdkAppId}`);
+      addLog(`AW_APP_ID found: ${Boolean(cfg.diagnostics?.awAppIdPresent)}`);
+      addLog(`appId source: ${cfg.diagnostics?.appIdSource ?? (cfg.id ? 'fallback' : 'missing')}`);
       addLog(`origin: ${window.location.origin}`);
       addLog(`parentOrigin: ${parentOrigin}`);
       addLog(`scopes: ${scopes.join(', ')}`);
@@ -502,7 +496,15 @@ export function App() {
     setSession(null);
     setUser(null);
     setSdkError(null);
-    setSdkDiagnostics({ appId: '', requestedAppId: '', origin: '', parentOrigin: '', scopes: [] });
+    setSdkDiagnostics({
+      appId: '',
+      requestedAppId: '',
+      awAppIdPresent: false,
+      appIdSource: 'missing',
+      origin: '',
+      parentOrigin: '',
+      scopes: [],
+    });
     setStatus('idle');
     setLogs([]);
   }
@@ -594,7 +596,7 @@ export function App() {
               className="input"
               type="text"
               autoFocus
-              placeholder="e.g. dev"
+              placeholder="App ID"
               value={appIdInput}
               onChange={(e) => setAppIdInput(e.target.value)}
             />
@@ -631,6 +633,8 @@ export function App() {
           </div>
           <div className="wallet-card__diagnostics">
             <span>appId: {sdkDiagnostics.appId || 'pending'}</span>
+            <span>AW_APP_ID: {sdkDiagnostics.awAppIdPresent ? 'found' : 'missing'}</span>
+            <span>source: {sdkDiagnostics.appIdSource}</span>
             {sdkDiagnostics.requestedAppId && sdkDiagnostics.requestedAppId !== sdkDiagnostics.appId && (
               <span>URL appId ignored: {sdkDiagnostics.requestedAppId}</span>
             )}

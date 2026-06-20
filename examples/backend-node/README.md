@@ -5,8 +5,10 @@ with no third-party dependencies (uses built-in `http`, `crypto`, and `fetch`).
 
 ## What it does
 
+- Injects `AW_APP_ID` into `/config.json` so the frontend SDK session uses the
+  app id registered in Antarctic Wallet.
 - Holds `AW_API_KEY` and `AW_API_SECRET` server-side so the browser never sees
-  them.
+  them. These credentials are for backend intent creation, not `sdk.init()`.
 - Exposes a small HTTP API the mini-app calls from the browser:
   - `POST /api/intents` — accepts `{ type, telegramUserId, amount?, scopes? }`,
     signs it with HMAC-SHA256, forwards to `${AW_API_BASE}/api/apps/v1/intents`,
@@ -18,6 +20,7 @@ with no third-party dependencies (uses built-in `http`, `crypto`, and `fetch`).
 ```bash
 cp .env.example .env
 # edit .env — set AW_API_BASE / AW_API_KEY / AW_API_SECRET
+# set AW_APP_ID to the app id registered in Antarctic Wallet Dev Mode
 npm start
 ```
 
@@ -53,4 +56,3 @@ X-Sdk-App-Signature = hex(HMAC-SHA256(api_secret, `${ts}.${METHOD}.${path}.${sha
 
 with `path = '/api/apps/v1/intents'`. Drift > 5 minutes returns
 `STALE_REQUEST` (401) from AW.
-

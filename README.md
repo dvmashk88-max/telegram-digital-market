@@ -47,7 +47,7 @@ npm run dev            # starts the dev server
 
 # Backend (in another terminal)
 cd examples/backend-node
-cp .env.example .env   # fill AW_API_BASE / AW_API_KEY / AW_API_SECRET
+cp .env.example .env   # fill AW_APP_ID plus backend intent credentials if needed
 npm install
 npm start
 ```
@@ -69,7 +69,7 @@ Every `App` file is laid out the same way — sections in this order:
    - `createBackendIntent(payload)` — POSTs the payload to `/api/intents` of YOUR backend, returns `operationId` + raw upstream response.
 3. **SDK bootstrap** (runs once on mount / init):
    1. `AWSDK.isInsideWallet()` — detects iframe vs standalone run.
-   2. `fetch('./config.json')` — reads `appId` + `requiredScopes`.
+   2. `fetch('./config.json')` — reads `appId` + `requiredScopes`; on the Node backend deployment, `AW_APP_ID` is injected into this response at runtime.
    3. `new AWSDK({ appId, scopes, parentOrigin, debug, retry, persistSession, timeout })`.
    4. Subscribes to every SDK event (see [Events](#sdk-events)).
    5. `await sdk.init()` — handshake with the host.
@@ -81,7 +81,7 @@ Every `App` file is laid out the same way — sections in this order:
 
 ```json
 {
-  "id": "dev",
+  "id": "",
   "name": "Example DApp",
   "shortDescription": "Demo embedded application",
   "description": "A demo embedded application showcasing the AW SDK.",
@@ -93,7 +93,7 @@ Every `App` file is laid out the same way — sections in this order:
 
 | Field              | Purpose                                                                                |
 |--------------------|----------------------------------------------------------------------------------------|
-| `id`               | App identifier, passed to the wallet as `appId`. Must match what the wallet has registered. |
+| `id`               | App identifier, passed to the wallet as `appId`. In the Node deployment this is supplied from `AW_APP_ID`; it must match what the wallet has registered. |
 | `name`             | Display name in the wallet UI.                                                         |
 | `shortDescription` | One-line description in app catalogs.                                                  |
 | `description`      | Long description shown on the app's detail page.                                       |
@@ -107,7 +107,7 @@ Every `App` file is laid out the same way — sections in this order:
 
 ```ts
 const sdk = new AWSDK({
-  appId: config.id,
+  appId: config.id, // from AW_APP_ID in the Node deployment
   scopes: [...config.requiredScopes],
   parentOrigin: getParentOrigin(),
   debug: true,              // logs postMessage traffic to the console

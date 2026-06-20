@@ -69,6 +69,8 @@ interface VioletCatalogItem {
 }
 
 const APP_ID_STORAGE_KEY = 'aw-demo:appId';
+const AW_SDK_SESSION_STORAGE_PREFIX = 'aw-sdk:session:';
+const AW_SDK_STORAGE_PREFIX = 'aw-sdk:';
 const VIOLET_CATALOG_ENDPOINT =
   'https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog';
 
@@ -250,6 +252,49 @@ function resolveSdkAppId(configId: string, requestedAppId: string | null, inside
   return requestedAppId ?? params.get('appId') ?? configId;
 }
 
+function removeStorageKeys(
+  storage: Storage,
+  shouldRemove: (key: string) => boolean,
+): string[] {
+  const removed: string[] = [];
+  for (let index = storage.length - 1; index >= 0; index -= 1) {
+    const key = storage.key(index);
+    if (!key || !shouldRemove(key)) continue;
+    storage.removeItem(key);
+    removed.push(key);
+  }
+  return removed;
+}
+
+function clearWalletSdkStorageCache(insideWallet: boolean): string[] {
+  const removed: string[] = [];
+
+  try {
+    const sessionKeys = removeStorageKeys(sessionStorage, (key) =>
+      key.startsWith(AW_SDK_SESSION_STORAGE_PREFIX),
+    );
+    removed.push(...sessionKeys.map((key) => `sessionStorage:${key}`));
+  } catch {
+    //
+  }
+
+  try {
+    const localSdkKeys = removeStorageKeys(localStorage, (key) =>
+      key.startsWith(AW_SDK_STORAGE_PREFIX),
+    );
+    removed.push(...localSdkKeys.map((key) => `localStorage:${key}`));
+
+    if (insideWallet && localStorage.getItem(APP_ID_STORAGE_KEY) !== null) {
+      localStorage.removeItem(APP_ID_STORAGE_KEY);
+      removed.push(`localStorage:${APP_ID_STORAGE_KEY}`);
+    }
+  } catch {
+    //
+  }
+
+  return removed;
+}
+
 function handleSdkError(error: unknown): string {
   if (error instanceof AWOperationError) {
     return `Operation error [${error.errorCode}]: ${error.message} (opId: ${error.operationId})`;
@@ -376,7 +421,7 @@ export function App() {
         parentOrigin,
         debug: true,
         timeout: 30_000,
-        persistSession: true,
+        persistSession: false,
         retry: { maxAttempts: 3, baseDelay: 1000 },
       });
       sdkRef.current = sdk;
@@ -415,6 +460,13 @@ export function App() {
       sdk.events.on('operation.rejected', ({ operationId, reason }) =>
         addLog(`Operation ${operationId} rejected: ${reason}`, 'warn'),
       );
+
+      const clearedStorageKeys = clearWalletSdkStorageCache(detectedInsideWallet);
+      if (clearedStorageKeys.length > 0) {
+        addLog(`Cleared SDK storage cache: ${clearedStorageKeys.join(', ')}`);
+      } else {
+        addLog('No SDK storage cache found to clear.');
+      }
 
       addLog('Initializing SDK...');
       setStatus('connecting');

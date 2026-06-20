@@ -1,5 +1,11 @@
 [phases.install]
-cmds = ["cd examples/backend-node && npm ci"]
+cmds = [
+  "cd examples/backend-node && npm ci",
+  "cd examples/react && npm ci"
+]
+
+[phases.build]
+cmds = ["cd examples/react && npm run build"]
 
 [start]
-cmd = "cd examples/backend-node && npm start"
+cmd = "cd examples/backend-node && STATIC_DIR=../react/dist npm start"

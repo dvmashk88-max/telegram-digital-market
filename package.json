@@ -15,7 +15,8 @@
     "example": "examples"
   },
   "scripts": {
-    "start": "node examples/backend-node/server.mjs",
+    "build": "npm ci --prefix examples/react && npm run build --prefix examples/react",
+    "start": "STATIC_DIR=examples/react/dist node examples/backend-node/server.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

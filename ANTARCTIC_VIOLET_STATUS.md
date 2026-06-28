@@ -460,3 +460,4 @@ POST https://app.antarcticwallet.com/api/v2/sdk/scopes -> HTTP 422
 - SDK Antarctic Wallet не изменялся.
 - FazerCards API и совместимость полностью сохранены.
 - Приложение готово к отправке на модерацию Antarctic Wallet.
+- 2026-06-28: скрыты внутренний курс Antarctic и наценка из блока «Итого к оплате».

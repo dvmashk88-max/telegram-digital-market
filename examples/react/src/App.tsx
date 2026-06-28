@@ -500,7 +500,7 @@ function getOrderFlowTitle(orderFlow: OrderFlow): string {
 
 function getOrderFlowHint(orderFlow: OrderFlow): string {
   const hints: Record<OrderFlow, string> = {
-    code_delivery: 'После оплаты код появится прямо здесь, на экране заказа. Скопируйте код и активируйте его в своём аккаунте.',
+    code_delivery: 'После оплаты код появится прямо здесь, в приложении.',
     steam_balance: 'Пополнение будет зачислено на указанный аккаунт Steam. Проверьте логин перед оплатой.',
     telegram_stars: 'Stars будут начислены на указанный аккаунт Telegram. Укажите username без ошибок.',
     telegram_premium: 'Premium будет оформлен на указанный аккаунт Telegram. Проверьте username перед оплатой.',
@@ -1120,11 +1120,6 @@ export function App() {
             </strong>
             <span className="total-box__rub">
               {clientPriceRub === null ? 'Ожидаем реальные данные FazerCards' : `≈ ${formatRub(clientPriceRub)}`}
-            </span>
-            <span className="total-box__note">
-              {selectedProduct.nominalCurrency
-                ? 'Курс Antarctic: 1 USDT = 77.95 RUB, наценка 30%'
-                : 'Сервисный сбор включён'}
             </span>
             <span className="total-box__delivery">
               Получение: {getDeliverySummary(selectedOrderFlow)}

@@ -1,5 +1,92 @@
 # Antarctic Violet — Project Status
 
+## Исправление иконки и Apple RU pricing 2026-07-07
+
+### Что было не так с иконкой
+
+- `/icon.svg` уже отдавал новую иконку.
+- `/favicon.ico` уже был привязан к новой `icon.svg`.
+- `/app-icon.svg` всё ещё отдавал старую AV-иконку:
+  - local/production hash старой иконки: `9629e031eb1a0b2d3e5a870376b88185c0ee0868e78ae6f462e58f38cbc5a97a`;
+  - именно этот URL ранее использовался как App Icon URL для Antarctic Wallet.
+- `config.json` указывал `"icon": "./icon.svg"`, а не на `/app-icon.svg`, поэтому источники иконки были несинхронны.
+
+### Что исправлено по иконке
+
+- `examples/react/public/app-icon.svg` заменён на тот же SVG, что и `icon.svg`.
+- `examples/react/public/config.json` теперь указывает:
+  - `"icon": "/app-icon.svg"`.
+- Backend route `GET /app-icon.svg` теперь явно отдаёт `STATIC_DIR/icon.svg`, так же как `GET /favicon.ico`.
+- После `npm run build` проверено, что dist assets совпадают:
+  - `examples/react/dist/icon.svg`;
+  - `examples/react/dist/app-icon.svg`.
+
+### Проверенные URL иконки
+
+- Local после исправления:
+  - `GET /icon.svg` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /app-icon.svg` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /favicon.ico` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /config.json` -> `"icon": "/app-icon.svg"`.
+- Production после деплоя:
+  - `GET /icon.svg` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /app-icon.svg` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /favicon.ico` -> hash `c55c9e6f634e45e70fb0b0faee5ac02021179ab73a793366c3c53d4d323bb4e0`;
+  - `GET /config.json` -> `"icon": "/app-icon.svg"`.
+
+### Что было не так с Apple RU pricing
+
+- Все App Store регионы использовали общий `APP_STORE_MARKUP_RATE = 0.30`.
+- Для `app_store_itunes_ru` это давало слишком низкую цену:
+  - `1000 RUB` получался около `17 USDT`.
+- Требуемая логика для RU:
+  - `APP_STORE_RU_MARKUP_RATE = 0.60`;
+  - `baseRub = nominal * RUB_RUB`;
+  - `baseUsdt = baseRub / ANTARCTIC_USDT_RATE_RUB`;
+  - `priceUsdt = baseUsdt * 1.60`;
+  - дальше применяется текущее округление вверх.
+
+### Что исправлено по Apple RU pricing
+
+- В `examples/backend-node/server.mjs` добавлен `APP_STORE_RU_MARKUP_RATE = 0.6`.
+- `calculateAppStoreSalePrice()` теперь выбирает markup по валюте:
+  - `RUB` -> `0.60`;
+  - `TRY`, `USD`, `INR` -> общий `APP_STORE_MARKUP_RATE = 0.30`.
+- Товары, номиналы, FazerCards API, payment flow и Antarctic Wallet SDK не менялись.
+
+### Проверочные цены Apple RU
+
+- Добавлен проверочный скрипт:
+  - `npm run check:violet-ru-pricing`;
+  - опционально сверяет catalog через `VIOLET_CATALOG_URL`.
+- Расчётные цены:
+  - `500 RUB` -> `11 USDT`;
+  - `1000 RUB` -> `21 USDT`;
+  - `2500 RUB` -> `52 USDT`;
+  - `5000 RUB` -> `103 USDT`.
+- Local `/api/fazercards/violet-catalog` после исправления:
+  - `500 RUB catalog -> 11 USDT`;
+  - `1000 RUB catalog -> 21 USDT`;
+  - `2500 RUB catalog -> not in current FazerCards offers; formula price would be 52 USDT`;
+  - `5000 RUB catalog -> 103 USDT`.
+- Production `/api/fazercards/violet-catalog` после деплоя:
+  - `500 RUB catalog -> 11 USDT`;
+  - `1000 RUB catalog -> 21 USDT`;
+  - `2500 RUB catalog -> not in current FazerCards offers; formula price would be 52 USDT`;
+  - `5000 RUB catalog -> 103 USDT`.
+
+### Проверки
+
+- `npm run check:violet-ru-pricing` -> проходит.
+- `VIOLET_CATALOG_URL=http://localhost:3351/api/fazercards/violet-catalog npm run check:violet-ru-pricing` -> проходит.
+- `VIOLET_CATALOG_URL=https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog npm run check:violet-ru-pricing` -> проходит.
+- `npm run build` -> проходит.
+
+### Commit и deployment
+
+- Code commit: `7b74c89` (`Fix Violet icon and Apple RU pricing`).
+- Railway deployment ID: `5040d990-572f-4253-9edf-69b152ff8cd1`.
+
 ## Read-write аудит и тестирование 2026-07-07
 
 ### Что проверено

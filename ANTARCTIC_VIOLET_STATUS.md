@@ -1,5 +1,89 @@
 # Antarctic Violet — Project Status
 
+## Единый pricing +50% для всего каталога 2026-07-07
+
+### Что изменено
+
+- Введён единый helper backend:
+  - `calculateSalePriceFromPurchaseUsd(purchasePriceUsd)`;
+  - формула: `roundStorePriceUsdt(purchasePriceUsd * 1.50)`;
+  - `priceRubApprox = Math.round(priceUsdt * ANTARCTIC_USDT_RATE_RUB)`.
+- Helper используется для всех вариантов, где FazerCards отдаёт закупочную цену:
+  - App Store / iTunes TR;
+  - App Store / iTunes US;
+  - App Store / iTunes RU;
+  - App Store / iTunes IN;
+  - Roblox Gift Card;
+  - PlayStation Gift Card;
+  - Xbox Gift Card;
+  - Steam Wallet / Steam Top-Up;
+  - Telegram Stars;
+  - Telegram Premium.
+- Реальные поля закупочной цены:
+  - gift cards / Steam offers: `offers[].price_usd`;
+  - Telegram Stars: `price_per_star`, для каждого pack считается `amount * price_per_star`;
+  - Telegram Premium: `plans[].price_usd`;
+  - generic fallback для единичных catalog items: `price_usd`, `priceUsd`, `price`, `cost`.
+- Для каждого priced варианта backend отдаёт:
+  - `rawPriceUsd`;
+  - `priceUsdt`;
+  - `priceRubApprox`.
+- Frontend теперь использует `priceUsdt` для всех товаров, у которых backend отдал priced variants, и не считает локальную фейковую цену от номинала после загрузки реального catalog.
+
+### Что без закупочной цены
+
+- В текущем FazerCards topups catalog для `pubg_mobile_auto` и `free_fire_eu` нет цены, вариантов или usable purchase-price fields.
+- Для них backend не отдаёт фейковую цену и пишет warning:
+  - `pubg`;
+  - `free-fire`.
+- В UI после загрузки catalog такие товары показывают отсутствие доступных номиналов вместо локально рассчитанной фейковой цены.
+
+### Проверенные товары и варианты
+
+- Production check:
+  - `apple-tr: 23 variants match rawPriceUsd * 1.50`;
+  - `apple-us: 29 variants match rawPriceUsd * 1.50`;
+  - `apple-ru: 15 variants match rawPriceUsd * 1.50`;
+  - `apple-in: 13 variants match rawPriceUsd * 1.50`;
+  - `roblox-gift-card: 6 variants match rawPriceUsd * 1.50`;
+  - `playstation-gift-card: 17 variants match rawPriceUsd * 1.50`;
+  - `xbox-gift-card: 8 variants match rawPriceUsd * 1.50`;
+  - `steam-top-up: 7 variants match rawPriceUsd * 1.50`;
+  - `telegram-stars: 4 variants match rawPriceUsd * 1.50`;
+  - `telegram-premium: 3 variants match rawPriceUsd * 1.50`.
+
+### Примеры production цен
+
+- Apple RU:
+  - `600 RUB @ 16.97 USD` -> `26 USDT`;
+  - `700 RUB @ 19.80 USD` -> `30 USDT`;
+  - `800 RUB @ 22.62 USD` -> `34 USDT`;
+  - `900 RUB @ 25.45 USD` -> `39 USDT`;
+  - `1000 RUB @ 30.72 USD` -> `47 USDT`;
+  - `1500 RUB @ 42.42 USD` -> `64 USDT`.
+- Other products:
+  - `Roblox 200 Robux @ 2.8179 USD` -> `4.3 USDT`;
+  - `PlayStation 10 USD @ 8.8000 USD` -> `14 USDT`;
+  - `Xbox 10 USD @ 8.5000 USD` -> `13 USDT`;
+  - `Steam 10 USD @ 10.4000 USD` -> `16 USDT`;
+  - `Telegram Stars 100 @ 1.52627 USD` -> `2.3 USDT`;
+  - `Telegram Premium 3 months @ 12.1869 USD` -> `19 USDT`.
+
+### Проверки
+
+- `npm run build` -> проходит.
+- `npm run check:violet-pricing-all` -> проходит.
+- `npm run check:violet-ru-pricing` -> проходит как alias на новый full pricing check.
+- Local:
+  - `VIOLET_CATALOG_URL=http://localhost:3351/api/fazercards/violet-catalog npm run check:violet-pricing-all` -> проходит.
+- Production:
+  - `VIOLET_CATALOG_URL=https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog npm run check:violet-pricing-all` -> проходит.
+
+### Commit и deployment
+
+- Code commit: `be1b787` (`Apply purchase-cost pricing to Violet catalog`).
+- Railway deployment ID: `fcc2c5c2-2b9f-4b6d-85ff-6f3a81d10231`.
+
 ## Срочное исправление App Store pricing от FazerCards cost 2026-07-07
 
 ### Старая ошибка

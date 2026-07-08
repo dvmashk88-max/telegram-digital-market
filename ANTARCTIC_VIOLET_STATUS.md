@@ -1,5 +1,250 @@
 # Antarctic Violet — Project Status
 
+## FazerCards order flow research 2026-07-07
+
+### Важное ограничение
+
+- Это был исследовательский проход по order flow.
+- Боевые заказы намеренно не планировались.
+- Публичная документация/OpenAPI на `api.fzr.cards` не найдена:
+  - `GET /docs` -> 404;
+  - `GET /documentation` -> 404;
+  - `GET /openapi.json` -> 404;
+  - `GET /swagger.json` -> 404;
+  - `GET /api-docs` -> 404;
+  - `GET /api/v2/docs` -> 404;
+  - `GET /api/v2/openapi.json` -> 404.
+- `GET` на order endpoints возвращает 404, endpoints являются POST-only.
+- `OPTIONS` на order endpoints возвращает `Invalid Preflight Request`, schema через OPTIONS не отдаётся.
+
+### Важный инцидент во время validation probing
+
+- При проверке validation schema один запрос оказался не dry-run, а реальным order create:
+  - endpoint: `POST /api/v2/telegram/premium/buy`;
+  - body: `{ "telegram_username": "invalid_user", "months": 3 }`;
+  - создан order: `ord-147037`;
+  - `chargedUsd`: `12.1869`;
+  - `balanceTxId`: `163683`;
+  - статус позже стал `completed`;
+  - `GET /api/v2/orders/ord-147037` вернул `account_display_name: "Invalid User"`.
+- После этого все POST-запросы были остановлены; дальше выполнялись только GET/read-only проверки.
+- Вывод: FazerCards order endpoints нельзя трогать даже с seemingly test username без отдельного подтверждения и отдельного low-risk test budget.
+- Safe dry-run/test/schema endpoint не найден.
+
+### Order status endpoints
+
+- Рабочий endpoint статуса конкретного заказа:
+  - `GET /api/v2/orders/{order_id}`;
+  - пример: `GET /api/v2/orders/ord-147037`.
+- Рабочий endpoint списка/поиска заказов:
+  - `GET /api/v2/orders`;
+  - `GET /api/v2/orders?id={order_id}`.
+- Order object содержит:
+  - `id`;
+  - `kind`;
+  - `status`;
+  - `chargedUsd`;
+  - `failReason`;
+  - `balanceTxId`;
+  - `refundTxId`;
+  - `statusHistory`;
+  - `createdAt`;
+  - `completedAt`.
+- Проверенные статусы:
+  - `created`;
+  - `processing`;
+  - `completed`.
+- Отдельные status endpoints не найдены:
+  - `/api/v2/order/{id}` -> 404;
+  - `/api/v2/status/{id}` -> 404;
+  - `/api/v2/telegram/premium/order/{id}` -> 404;
+  - `/api/v2/telegram/premium/status/{id}` -> 404.
+
+### Balance endpoint
+
+- `GET /api/v2/balance` работает.
+- После accidental Telegram Premium order баланс был:
+  - `{"ok":true,"balance":"7.8231","currency":"USD"}`.
+- Ошибку недостаточного баланса безопасно не проверяли, потому что это требует реального order attempt.
+
+### Gift Cards
+
+- Catalog/variants:
+  - `GET /api/v2/giftcards`;
+  - `GET /api/v2/giftcards/cards?category_id={category_id}`.
+- Order endpoint:
+  - `POST /api/v2/giftcards/order`.
+- Validation probing показал обязательные поля:
+  - `category_id`;
+  - `card_id`;
+  - `quantity`.
+- Если `category_id/card_id` не совпадают с реальным offer:
+  - HTTP 404;
+  - `No matching offer: check category_id and card_id (same pair as in GET /giftcards/cards for that category).`
+- Как именно возвращается купленный код без реальной покупки не подтверждено.
+- Гипотеза по общей модели API: после POST нужно читать `GET /api/v2/orders/{order_id}`; наличие кода/ключа в completed order нужно подтвердить отдельным контролируемым тестовым заказом или документацией поставщика.
+
+### Steam
+
+- В текущем Violet catalog Steam представлен как gift card category:
+  - `category_id = steam_wallet_global`;
+  - read-only variants доступны через `GET /api/v2/giftcards/cards?category_id=steam_wallet_global`;
+  - offers имеют `card_id`, `name`, `price_usd`, `stock`.
+- Текущий backend metadata всё ещё мапит `steam-top-up` на:
+  - `POST /api/v2/steam-topup/order`;
+  - `orderFlow = steam_balance`;
+  - required field в UI: `steamLogin`.
+- Validation probing `POST /api/v2/steam-topup/order` показал обязательные поля:
+  - `steamLogin`;
+  - `currency`;
+  - следующие поля не проверялись, чтобы не создать заказ.
+- Вывод: нужно уточнить продуктовую модель Steam:
+  - если продаём Steam Wallet gift codes, вероятно безопаснее использовать `POST /api/v2/giftcards/order` с `category_id=steam_wallet_global`, `card_id`, `quantity`;
+  - если продаём прямой Steam top-up, нужен точный schema для `steam-topup/order` и список поддерживаемых `currency/amount`.
+
+### Telegram Stars
+
+- Read-only endpoint:
+  - `GET /api/v2/telegram/stars`;
+  - отдаёт `price_per_star`, `min_amount`, `max_amount`.
+- Order endpoint:
+  - `POST /api/v2/telegram/stars/buy`.
+- Validation probing показал обязательные поля:
+  - `telegram_username`;
+  - `quantity`.
+- Safe example response без создания заказа не найден.
+- Ожидаемый результат заказа нужно получать через:
+  - `GET /api/v2/orders/{order_id}`.
+
+### Telegram Premium
+
+- Read-only endpoint:
+  - `GET /api/v2/telegram/premium`;
+  - отдаёт `plans[]` с `months` и `price_usd`.
+- Order endpoint:
+  - `POST /api/v2/telegram/premium/buy`.
+- Обязательные поля:
+  - `telegram_username`;
+  - `months`.
+- Важно: валидный payload сразу создаёт заказ и списывает баланс.
+- Подтверждённый response create:
+  - HTTP 201;
+  - `ok: true`;
+  - `order.id`;
+  - `order.kind = telegram_premium`;
+  - `order.status = created`;
+  - `chargedUsd`;
+  - `balanceTxId`.
+- Статус потом читается через:
+  - `GET /api/v2/orders/{order_id}`.
+
+### PUBG Mobile
+
+- Причина прошлой проблемы с ценами:
+  - `GET /api/v2/topups` отдаёт только категории без вариантов и без price fields.
+- Правильный read-only endpoint вариантов:
+  - `GET /api/v2/topups/offers?category_id=pubg_mobile_auto`.
+- Endpoint отдаёт:
+  - `offers[]`;
+  - `offer_id`;
+  - `name`;
+  - `price_usd`;
+  - `fields`;
+  - `note`.
+- Required fields metadata:
+  - `{ "key": "player_id", "label": "Player ID", "type": "text" }`.
+- Проверенные примеры offers:
+  - `60_uc` / `60 UC` / `price_usd: 0.8805`;
+  - `325_uc` / `325 UC` / `price_usd: 4.4157`;
+  - `660_uc` / `660 UC` / `price_usd: 8.9000`;
+  - `1800_uc` / `1800 UC` / `price_usd: 22.2500`;
+  - `3850_uc` / `3850 UC` / `price_usd: 44.5000`.
+- Order endpoint:
+  - `POST /api/v2/topups/order`.
+- Validation probing показал обязательные поля:
+  - `category_id`;
+  - `offer_id`;
+  - `fields`.
+- Для PUBG `fields` должен включать `player_id`.
+
+### Free Fire
+
+- Причина прошлой проблемы с ценами такая же:
+  - `GET /api/v2/topups` отдаёт категорию без вариантов и без price fields.
+- Правильный read-only endpoint вариантов:
+  - `GET /api/v2/topups/offers?category_id=free_fire_eu`.
+- Endpoint отдаёт:
+  - `offers[]`;
+  - `offer_id`;
+  - `name`;
+  - `price_usd`;
+  - `fields`;
+  - `note`.
+- Required fields metadata:
+  - `{ "key": "player_id", "label": "Player ID", "type": "text" }`.
+- Проверенные примеры offers:
+  - `25_diamonds` / `25 Diamonds` / `price_usd: 0.2550`;
+  - `weekly_lite` / `Weekly Lite` / `price_usd: 0.2747`;
+  - `evo_access_3d` / `Evo Access 3D` / `price_usd: 0.5494`;
+  - `100_diamonds` / `100 Diamonds` / `price_usd: 0.8437`;
+  - `weekly_membership` / `Weekly Membership` / `price_usd: 1.6630`.
+- Order endpoint:
+  - `POST /api/v2/topups/order`.
+- Validation probing показал обязательные поля:
+  - `category_id`;
+  - `offer_id`;
+  - `fields`.
+- Для Free Fire `fields` должен включать `player_id`.
+
+### Game Keys
+
+- Read-only endpoints:
+  - `GET /api/v2/gamekeys`;
+  - `GET /api/v2/gamekeys/keys?game_id={game_id}`.
+- `GET /api/v2/gamekeys/keys` без `game_id` возвращает validation error:
+  - `querystring: must have required property 'game_id'`.
+- Пример:
+  - `GET /api/v2/gamekeys/keys?game_id=among_us_global`;
+  - key: `key_id = base`;
+  - `name = Among Us`;
+  - `price_usd = 3.1310`;
+  - `stock = 11`.
+- Order endpoint:
+  - `POST /api/v2/gamekeys/order`.
+- Validation probing показал обязательные поля:
+  - `game_id`;
+  - `key_id`.
+
+### Как FazerCards отдаёт ключи и коды
+
+- Без реального gift card / game key заказа невозможно безопасно подтвердить, находится ли код:
+  - сразу в response `POST /order`;
+  - позже в `GET /api/v2/orders/{order_id}`;
+  - в отдельном endpoint.
+- Подтверждённая часть:
+  - order create для Telegram Premium возвращает `order`;
+  - `GET /api/v2/orders/{order_id}` возвращает актуальный статус, историю и финансовые поля;
+  - webhook endpoint/documentation не найден.
+- Для подключения кодов/ключей следующим шагом нужен один из двух вариантов:
+  - официальная документация/ответ поддержки FazerCards по completed order payload;
+  - контролируемый low-value test order с явным подтверждением пользователя и заранее выбранным минимальным SKU.
+
+### Что можно подключать следующим шагом
+
+- Read-only catalog:
+  - добавить в backend `GET /api/v2/topups/offers?category_id=...` для PUBG и Free Fire;
+  - добавить variants/pricing для PUBG и Free Fire по `offer_id` и `price_usd`;
+  - обновить frontend формы так, чтобы topup `fields` строились из metadata (`player_id`).
+- Order preparation без покупки:
+  - собрать backend-only draft payload builder для каждого orderFlow;
+  - валидировать наличие `category_id/card_id/offer_id/fields/telegram_username/months/quantity` до wallet payment;
+  - не вызывать FazerCards POST до отдельного confirmed purchase step.
+- Реальный purchase flow:
+  - после оплаты через Antarctic Wallet backend вызывает FazerCards order endpoint;
+  - сохраняет `order_id`;
+  - polling через `GET /api/v2/orders/{order_id}`;
+  - показывает код/ключ только после подтверждения, где именно FazerCards возвращает секретные данные.
+
 ## Единый pricing +50% для всего каталога 2026-07-07
 
 ### Что изменено

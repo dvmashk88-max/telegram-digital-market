@@ -1,5 +1,65 @@
 # Antarctic Violet — Project Status
 
+## PUBG / Free Fire read-only pricing fix 2026-07-07
+
+### Что исправлено
+
+- PUBG и Free Fire теперь получают варианты и закупочные цены через read-only endpoint:
+  - `GET /api/v2/topups/offers?category_id=pubg_mobile_auto`;
+  - `GET /api/v2/topups/offers?category_id=free_fire_eu`.
+- POST/order endpoints не вызывались.
+- Payment flow и Antarctic Wallet SDK не менялись.
+- Для каждого topup offer в `/api/fazercards/violet-catalog` теперь формируется:
+  - `cardId = offer_id`;
+  - `name`;
+  - `rawPriceUsd = price_usd`;
+  - `priceUsdt = roundStorePriceUsdt(rawPriceUsd * 1.50)`;
+  - `priceRubApprox = Math.round(priceUsdt * ANTARCTIC_USDT_RATE_RUB)`.
+- `denominations` строятся из offers; frontend показывает человекочитаемый `name`:
+  - `60 UC`;
+  - `325 UC`;
+  - `25 Diamonds`;
+  - `Weekly Lite`.
+- `fields[].key = "player_id"` из FazerCards metadata мапится в frontend key:
+  - `requiredFields: ["playerId"]`.
+
+### Production examples
+
+- PUBG:
+  - `60_uc` / `60 UC` / `0.8805 USD` -> `1.4 USDT` (`≈109 ₽`);
+  - `325_uc` / `325 UC` / `4.4157 USD` -> `6.7 USDT` (`≈522 ₽`);
+  - `660_uc` / `660 UC` / `8.9000 USD` -> `14 USDT` (`≈1091 ₽`);
+  - `1800_uc` / `1800 UC` / `22.2500 USD` -> `34 USDT` (`≈2650 ₽`);
+  - `3850_uc` / `3850 UC` / `44.5000 USD` -> `67 USDT` (`≈5223 ₽`).
+- Free Fire:
+  - `25_diamonds` / `25 Diamonds` / `0.2550 USD` -> `0.5 USDT` (`≈39 ₽`);
+  - `weekly_lite` / `Weekly Lite` / `0.2747 USD` -> `0.5 USDT` (`≈39 ₽`);
+  - `evo_access_3d` / `Evo Access 3D` / `0.5494 USD` -> `0.9 USDT` (`≈70 ₽`);
+  - `evo_access_7d` / `Evo Access 7D` / `0.8241 USD` -> `1.3 USDT` (`≈101 ₽`);
+  - `100_diamonds` / `100 Diamonds` / `0.8437 USD` -> `1.3 USDT` (`≈101 ₽`).
+
+### Проверки
+
+- `npm run build` -> проходит.
+- `npm run check:violet-pricing-all` -> проходит.
+- Local read-only check:
+  - `VIOLET_CATALOG_URL=http://localhost:3351/api/fazercards/violet-catalog npm run check:violet-pricing-all`;
+  - `pubg: 23 variants match rawPriceUsd * 1.50`;
+  - `free-fire: 19 variants match rawPriceUsd * 1.50`.
+- Production read-only check:
+  - `VIOLET_CATALOG_URL=https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog npm run check:violet-pricing-all`;
+  - `pubg: 23 variants match rawPriceUsd * 1.50`;
+  - `free-fire: 19 variants match rawPriceUsd * 1.50`.
+- Production metadata:
+  - `pubg.requiredFields = ["playerId"]`;
+  - `free-fire.requiredFields = ["playerId"]`;
+  - `raw.offersEndpoint = "/api/v2/topups/offers"`.
+
+### Commit и deployment
+
+- Code commit: `555728c` (`Load topup offers for Violet catalog`).
+- Railway deployment ID: `434aaa9a-419a-42e4-8045-6b681397f41d`.
+
 ## FazerCards order flow research 2026-07-07
 
 ### Важное ограничение

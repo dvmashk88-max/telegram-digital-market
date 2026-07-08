@@ -110,14 +110,17 @@ const VIOLET_PRODUCT_MATCHERS = [
   },
 ];
 
-const APP_STORE_CATEGORY_CURRENCIES = {
+const ANTARCTIC_USDT_RATE_RUB = 77.95;
+const APP_STORE_MARKUP_RATE = 0.5;
+const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
   app_store_itunes_ru: 'RUB',
   app_store_itunes_in: 'INR',
+  playstation_us: 'USD',
+  xbox_us: 'USD',
+  steam_wallet_global: 'USD',
 };
-const ANTARCTIC_USDT_RATE_RUB = 77.95;
-const APP_STORE_MARKUP_RATE = 0.5;
 
 const ORDER_FLOW_BY_SOURCE = {
   giftcards: {
@@ -260,6 +263,9 @@ async function fetchFazerCardsItems(path) {
 
 function normalizeCatalogItem(productId, source, item) {
   const orderFlow = resolveOrderFlow(productId, source);
+  const purchasePriceUsd = resolvePurchasePriceUsd(item);
+  const salePrice = purchasePriceUsd === null ? {} : calculateSalePriceFromPurchaseUsd(purchasePriceUsd);
+
   return {
     productId,
     source,
@@ -271,6 +277,8 @@ function normalizeCatalogItem(productId, source, item) {
     note: item.note ?? null,
     denominations: Array.isArray(item.denominations) ? item.denominations : [],
     supplierPrice: item.price_usd ?? item.price ?? item.cost ?? null,
+    rawPriceUsd: purchasePriceUsd,
+    ...salePrice,
     available: item.available ?? item.in_stock ?? true,
     raw: {
       kind: item.kind ?? null,
@@ -279,6 +287,14 @@ function normalizeCatalogItem(productId, source, item) {
       maxAmount: item.max_amount ?? null,
     },
   };
+}
+
+function resolvePurchasePriceUsd(item) {
+  for (const field of ['price_usd', 'priceUsd', 'price', 'cost']) {
+    const value = Number(item?.[field]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
 }
 
 function parseGiftCardNominal(offer, expectedCurrency) {
@@ -290,9 +306,9 @@ function parseGiftCardNominal(offer, expectedCurrency) {
   }
 
   const text = [offer.name, offer.card_id, offer.id].filter(Boolean).join(' ');
-  const escapedCurrency = expectedCurrency.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const currencyPattern = new RegExp(`([\\d.,\\s]+)\\s*${escapedCurrency}\\b`, 'i');
-  const matched = text.match(currencyPattern) ?? text.match(/([\d.,\s]+)/);
+  const matched = expectedCurrency
+    ? text.match(new RegExp(`([\\d.,\\s]+)\\s*${expectedCurrency.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')) ?? text.match(/([\d.,\s]+)/)
+    : text.match(/([\d.,\s]+)/);
   if (!matched) return null;
 
   const numeric = matched[1].replace(/\s/g, '').replace(',', '.');
@@ -301,7 +317,7 @@ function parseGiftCardNominal(offer, expectedCurrency) {
   return { nominal, currency: expectedCurrency };
 }
 
-function calculateAppStoreSalePrice(purchasePriceUsd) {
+function calculateSalePriceFromPurchaseUsd(purchasePriceUsd) {
   const priceUsdt = roundStorePriceUsdt(purchasePriceUsd * (1 + APP_STORE_MARKUP_RATE));
   return {
     priceUsdt,
@@ -320,11 +336,10 @@ function roundStorePriceUsdt(priceUsdt) {
   return Math.ceil(priceUsdt - Number.EPSILON);
 }
 
-function normalizeAppStoreOffer(categoryId, offer) {
-  const expectedCurrency = APP_STORE_CATEGORY_CURRENCIES[categoryId];
-  const parsed = parseGiftCardNominal(offer, expectedCurrency);
+function normalizePricedOffer(categoryId, offer, options = {}) {
+  const parsed = parseGiftCardNominal(offer, options.expectedCurrency);
   if (!parsed) {
-    console.warn('[fazercards] unable to parse App Store gift card nominal', {
+    console.warn('[fazercards] unable to parse priced offer nominal', {
       categoryId,
       cardId: offer.card_id ?? offer.id ?? null,
       name: offer.name ?? null,
@@ -332,18 +347,20 @@ function normalizeAppStoreOffer(categoryId, offer) {
     return null;
   }
 
-  const purchasePriceUsd = Number(offer.price_usd);
-  if (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd <= 0) {
-    console.warn('[fazercards] App Store gift card offer skipped because price_usd is invalid', {
+  const purchasePriceUsd = resolvePurchasePriceUsd(offer);
+  if (purchasePriceUsd === null) {
+    console.warn('[fazercards] priced offer skipped because purchase price is invalid', {
       categoryId,
       cardId: offer.card_id ?? offer.id ?? null,
       name: offer.name ?? null,
       priceUsd: offer.price_usd ?? null,
+      price: offer.price ?? null,
+      cost: offer.cost ?? null,
     });
     return null;
   }
 
-  const salePrice = calculateAppStoreSalePrice(purchasePriceUsd);
+  const salePrice = calculateSalePriceFromPurchaseUsd(purchasePriceUsd);
   return {
     cardId: offer.card_id ?? offer.id ?? null,
     nominal: parsed.nominal,
@@ -361,29 +378,45 @@ function normalizeAppStoreOffer(categoryId, offer) {
   };
 }
 
-async function fetchAppStoreOffers(categoryId) {
+async function fetchGiftCardOffers(categoryId) {
   const payload = await fetchFazerCardsJson('/api/v2/giftcards/cards', { category_id: categoryId });
   const offers = Array.isArray(payload.offers) ? payload.offers : [];
+  const expectedCurrency = PRICED_GIFTCARD_CATEGORY_CURRENCIES[categoryId];
   return offers
-    .map((offer) => normalizeAppStoreOffer(categoryId, offer))
+    .map((offer) => normalizePricedOffer(categoryId, offer, { expectedCurrency }))
     .filter(Boolean)
     .sort((a, b) => a.nominal - b.nominal);
 }
 
 async function normalizeVioletCatalogItem(productId, source, item) {
   const normalized = normalizeCatalogItem(productId, source, item);
-  if (source !== 'giftcards' || !APP_STORE_CATEGORY_CURRENCIES[item.category_id]) {
+  if (source !== 'giftcards') {
+    if (normalized.rawPriceUsd === null) {
+      console.warn('[fazercards] catalog item has no purchase price; sale price omitted', {
+        productId,
+        source,
+        categoryId: item.category_id ?? null,
+        name: item.name ?? null,
+      });
+    }
     return normalized;
   }
 
-  const offers = await fetchAppStoreOffers(item.category_id);
+  const offers = await fetchGiftCardOffers(item.category_id);
+  if (offers.length === 0) {
+    console.warn('[fazercards] gift card category has no priced offers; sale prices omitted', {
+      productId,
+      categoryId: item.category_id ?? null,
+      name: item.name ?? null,
+    });
+  }
   return {
     ...normalized,
     offers,
     denominations: offers.map((offer) => offer.nominal),
     raw: {
       ...normalized.raw,
-      currency: APP_STORE_CATEGORY_CURRENCIES[item.category_id],
+      currency: PRICED_GIFTCARD_CATEGORY_CURRENCIES[item.category_id] ?? null,
       offersEndpoint: '/api/v2/giftcards/cards',
     },
   };
@@ -394,6 +427,24 @@ function normalizeTelegramStars(payload) {
   const starPacks = [50, 100, 250, 500].filter(
     (amount) => amount >= Number(payload.min_amount ?? 0) && amount <= Number(payload.max_amount ?? Infinity),
   );
+  const offers = Number.isFinite(pricePerStar) && pricePerStar > 0
+    ? starPacks.map((amount) => {
+      const rawPriceUsd = Number((amount * pricePerStar).toFixed(6));
+      return {
+        cardId: `${amount}_stars`,
+        nominal: amount,
+        currency: undefined,
+        name: `${amount} Stars`,
+        rawPriceUsd,
+        ...calculateSalePriceFromPurchaseUsd(rawPriceUsd),
+      };
+    })
+    : [];
+  if (offers.length === 0) {
+    console.warn('[fazercards] Telegram Stars has no valid price_per_star; sale prices omitted', {
+      pricePerStar: payload.price_per_star ?? null,
+    });
+  }
   return {
     productId: 'telegram-stars',
     source: 'telegram_stars',
@@ -403,10 +454,10 @@ function normalizeTelegramStars(payload) {
     cardId: null,
     name: 'Telegram Stars',
     note: 'Telegram Stars direct top-up.',
-    denominations: Number.isFinite(pricePerStar)
-      ? starPacks.map((amount) => Number((amount * pricePerStar).toFixed(2)))
-      : [],
+    denominations: offers.map((offer) => offer.nominal),
     supplierPrice: Number.isFinite(pricePerStar) ? pricePerStar.toFixed(6) : null,
+    rawPriceUsd: null,
+    offers,
     available: Boolean(payload.ok),
     raw: {
       kind: payload.kind ?? null,
@@ -419,6 +470,27 @@ function normalizeTelegramStars(payload) {
 
 function normalizeTelegramPremium(payload) {
   const plans = Array.isArray(payload.plans) ? payload.plans : [];
+  const offers = plans
+    .map((plan) => {
+      const rawPriceUsd = resolvePurchasePriceUsd(plan);
+      if (rawPriceUsd === null) {
+        console.warn('[fazercards] Telegram Premium plan skipped because price_usd is invalid', {
+          months: plan.months ?? null,
+          priceUsd: plan.price_usd ?? null,
+        });
+        return null;
+      }
+      const months = Number(plan.months);
+      return {
+        cardId: Number.isFinite(months) ? `${months}_months` : null,
+        nominal: Number.isFinite(months) ? months : rawPriceUsd,
+        currency: undefined,
+        name: Number.isFinite(months) ? `${months} months` : `${rawPriceUsd} USD`,
+        rawPriceUsd,
+        ...calculateSalePriceFromPurchaseUsd(rawPriceUsd),
+      };
+    })
+    .filter(Boolean);
   return {
     productId: 'telegram-premium',
     source: 'telegram_premium',
@@ -428,11 +500,10 @@ function normalizeTelegramPremium(payload) {
     cardId: null,
     name: 'Telegram Premium',
     note: 'Telegram Premium subscription plans.',
-    denominations: plans
-      .map((plan) => Number(plan.price_usd))
-      .filter((amount) => Number.isFinite(amount))
-      .map((amount) => Number(amount.toFixed(2))),
+    denominations: offers.map((offer) => offer.nominal),
     supplierPrice: null,
+    rawPriceUsd: null,
+    offers,
     available: Boolean(payload.ok && plans.length > 0),
     raw: {
       kind: payload.kind ?? null,

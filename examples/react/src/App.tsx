@@ -74,6 +74,9 @@ interface VioletCatalogItem {
   note: string | null;
   denominations: number[];
   supplierPrice: string | number | null;
+  rawPriceUsd?: string | number | null;
+  priceUsdt?: number;
+  priceRubApprox?: number;
   available: boolean;
   orderFlow?: OrderFlow;
   orderEndpoint?: string | null;
@@ -370,13 +373,6 @@ function formatCategoryLabel(categoryId: CategoryId): string {
   return labels[categoryId];
 }
 
-function getCategoryMarkupRate(categoryId: CategoryId): number {
-  if (categoryId === 'telegram') return 0.15;
-  if (categoryId === 'steam') return 0.2;
-  if (categoryId === 'gift-cards') return 0.3;
-  return 0.25;
-}
-
 function formatUsdt(amount: number): string {
   return `${Number.isInteger(amount) ? amount.toString() : amount.toFixed(2)} USDT`;
 }
@@ -392,6 +388,7 @@ function formatNominalAmount(amount: number, currency?: VioletCatalogOffer['curr
 }
 
 function formatOfferNominal(offer: VioletCatalogOffer, product: Product): string {
+  if (!offer.currency && !product.nominalCurrency && offer.name) return offer.name;
   return formatNominalAmount(offer.nominal, offer.currency ?? product.nominalCurrency);
 }
 
@@ -400,18 +397,27 @@ function maskIdentifier(value: string): string {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
-function calculateClientPrice(amount: number, categoryId: CategoryId): number {
-  return Number((amount * (1 + getCategoryMarkupRate(categoryId))).toFixed(2));
-}
-
 function isAppStoreProduct(product: Product): boolean {
   return Boolean(product.nominalCurrency);
 }
 
 function resolveProductOffers(product: Product, meta: VioletCatalogItem | null): VioletCatalogOffer[] {
-  if (isAppStoreProduct(product)) return meta?.offers ?? [];
-  const denominations = meta?.denominations.length ? meta.denominations : product.denominations;
-  return denominations.map((nominal) => ({
+  if (meta?.offers?.length) return meta.offers;
+  if (meta) {
+    if (meta.denominations.length && meta.priceUsdt && meta.rawPriceUsd) {
+      return meta.denominations.map((nominal) => ({
+        cardId: meta.cardId,
+        nominal,
+        name: null,
+        rawPriceUsd: meta.rawPriceUsd,
+        priceUsdt: meta.priceUsdt,
+        priceRubApprox: meta.priceRubApprox,
+      }));
+    }
+    return [];
+  }
+  if (isAppStoreProduct(product)) return [];
+  return product.denominations.map((nominal) => ({
     cardId: null,
     nominal,
     name: null,
@@ -419,7 +425,7 @@ function resolveProductOffers(product: Product, meta: VioletCatalogItem | null):
 }
 
 function getProductCatalogState(product: Product, meta: VioletCatalogItem | null): string {
-  if (isAppStoreProduct(product)) {
+  if (isAppStoreProduct(product) || meta?.offers) {
     if (!meta) return 'Нет данных FazerCards';
     return meta.offers?.length ? `${meta.offers.length} вариантов` : 'Нет номиналов';
   }
@@ -781,9 +787,7 @@ export function App() {
   const clientPrice =
     selectedOffer === null
       ? null
-      : selectedProduct.nominalCurrency
-        ? selectedOffer.priceUsdt ?? null
-        : calculateClientPrice(selectedOffer.nominal, selectedCategory);
+      : selectedOffer.priceUsdt ?? null;
   const clientPriceRub =
     selectedOffer?.priceRubApprox ?? (clientPrice === null ? null : Math.round(clientPrice * ANTARCTIC_USDT_RATE_RUB));
   const selectedOrderFlow = resolveOrderFlow(selectedProduct, selectedProductMeta);

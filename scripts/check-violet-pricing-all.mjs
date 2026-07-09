@@ -1,6 +1,8 @@
-const CATALOG_URL = process.env.VIOLET_CATALOG_URL || '';
-const ANTARCTIC_USDT_RATE_RUB = 77.95;
-const CATALOG_MARKUP_RATE = 0.5;
+import { VIOLET_CATALOG_URL } from '../config.mjs';
+
+const CATALOG_URL = VIOLET_CATALOG_URL;
+const USD_TO_RUB = 90;
+const MARKUP_PERCENT = 50;
 const CHECK_RU_PURCHASE_PRICES = [
   { nominal: 600, purchasePriceUsd: 16.97 },
   { nominal: 700, purchasePriceUsd: 19.80 },
@@ -10,15 +12,8 @@ const CHECK_RU_PURCHASE_PRICES = [
   { nominal: 1500, purchasePriceUsd: 42.42 },
 ];
 
-function roundStorePriceUsdt(priceUsdt) {
-  const ceilToTenth = (value) => Number((Math.ceil((value - Number.EPSILON) * 10) / 10).toFixed(2));
-  if (priceUsdt < 1) return Math.max(0.5, ceilToTenth(priceUsdt));
-  if (priceUsdt < 10) return ceilToTenth(priceUsdt);
-  return Math.ceil(priceUsdt - Number.EPSILON);
-}
-
-function expectedSalePrice(purchasePriceUsd) {
-  return roundStorePriceUsdt(purchasePriceUsd * (1 + CATALOG_MARKUP_RATE));
+function calculateSalePriceFromPurchaseUsd(purchasePriceUsd) {
+  return Math.round(purchasePriceUsd * USD_TO_RUB * (1 + MARKUP_PERCENT / 100));
 }
 
 function assertPricedEntity(label, entity) {
@@ -27,20 +22,15 @@ function assertPricedEntity(label, entity) {
     throw new Error(`${label} has invalid rawPriceUsd: ${entity.rawPriceUsd}`);
   }
 
-  const expectedPriceUsdt = expectedSalePrice(purchasePriceUsd);
-  if (entity.priceUsdt !== expectedPriceUsdt) {
-    throw new Error(`${label} expected ${expectedPriceUsdt} USDT from rawPriceUsd ${entity.rawPriceUsd}, got ${entity.priceUsdt}`);
-  }
-
-  const expectedPriceRubApprox = Math.round(expectedPriceUsdt * ANTARCTIC_USDT_RATE_RUB);
-  if (entity.priceRubApprox !== expectedPriceRubApprox) {
-    throw new Error(`${label} expected ${expectedPriceRubApprox} RUB approx, got ${entity.priceRubApprox}`);
+  const expectedPriceRub = calculateSalePriceFromPurchaseUsd(purchasePriceUsd);
+  if (entity.priceRub !== expectedPriceRub) {
+    throw new Error(`${label} expected ${expectedPriceRub} RUB from rawPriceUsd ${entity.rawPriceUsd}, got ${entity.priceRub}`);
   }
 }
 
-console.log('Expected sale prices from FazerCards purchase price with +50% markup');
+console.log('Expected RUB sale prices from FazerCards purchase price with +50% markup');
 for (const { nominal, purchasePriceUsd } of CHECK_RU_PURCHASE_PRICES) {
-  console.log(`Apple RU ${nominal} RUB @ ${purchasePriceUsd.toFixed(2)} USD -> ${expectedSalePrice(purchasePriceUsd)} USDT`);
+  console.log(`Apple RU ${nominal} RUB @ ${purchasePriceUsd.toFixed(2)} USD -> ${calculateSalePriceFromPurchaseUsd(purchasePriceUsd)} RUB`);
 }
 
 if (CATALOG_URL) {
@@ -59,13 +49,13 @@ if (CATALOG_URL) {
       for (const offer of offers) {
         assertPricedEntity(`${product.productId} ${offer.nominal} ${offer.currency ?? offer.name ?? ''}`.trim(), offer);
       }
-      console.log(`${product.productId}: ${offers.length} variants match rawPriceUsd * 1.50`);
+      console.log(`${product.productId}: ${offers.length} variants match rawPriceUsd * ${USD_TO_RUB} * 1.50`);
       continue;
     }
 
-    if (product.rawPriceUsd !== null && product.rawPriceUsd !== undefined && product.priceUsdt !== undefined) {
+    if (product.rawPriceUsd !== null && product.rawPriceUsd !== undefined && product.priceRub !== undefined) {
       assertPricedEntity(product.productId, product);
-      console.log(`${product.productId}: product price matches rawPriceUsd * 1.50`);
+      console.log(`${product.productId}: product price matches rawPriceUsd * ${USD_TO_RUB} * 1.50`);
       continue;
     }
 
@@ -84,7 +74,7 @@ if (CATALOG_URL) {
         console.log(`Apple RU ${nominal} RUB catalog -> not in current FazerCards offers`);
         continue;
       }
-      console.log(`Apple RU ${nominal} RUB @ ${Number(offer.rawPriceUsd).toFixed(2)} USD catalog -> ${offer.priceUsdt} USDT`);
+      console.log(`Apple RU ${nominal} RUB @ ${Number(offer.rawPriceUsd).toFixed(2)} USD catalog -> ${offer.priceRub} RUB`);
     }
   }
 }

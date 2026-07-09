@@ -1,58 +1,24 @@
-# Example DApp — Node.js backend
+# MAX Digital Market Backend
 
-Reference server for the Antarctic Wallet B2B intents flow. Runs on Node 18+
-with no third-party dependencies (uses built-in `http`, `crypto`, and `fetch`).
+Express backend for the React storefront.
 
-## What it does
+## Endpoints
 
-- Injects `AW_APP_ID` into `/config.json` so the frontend SDK session uses the
-  app id registered in Antarctic Wallet.
-- Holds `AW_API_KEY` and `AW_API_SECRET` server-side so the browser never sees
-  them. These credentials are for backend intent creation, not `sdk.init()`.
-- Exposes a small HTTP API the mini-app calls from the browser:
-  - `POST /api/intents` — accepts `{ type, telegramUserId, amount?, scopes? }`,
-    signs it with HMAC-SHA256, forwards to `${AW_API_BASE}/api/apps/v1/intents`,
-    and returns the upstream response untouched.
-  - `GET /health` — liveness probe.
+- `GET /health` — liveness probe.
+- `GET /config.json` — frontend config from the built static directory.
+- `GET /api/fazercards/giftcards` — FazerCards gift card proxy.
+- `GET /api/fazercards/violet-catalog` — normalized catalog used by the storefront.
 
-## Quick start
+## Environment
 
-```bash
-cp .env.example .env
-# edit .env — set AW_API_BASE / AW_API_KEY / AW_API_SECRET
-# set AW_APP_ID to the app id registered in Antarctic Wallet Dev Mode
-npm start
-```
+All environment variables are read in the root `config.mjs`.
 
-Or with hot-reload while developing:
+- `FAZERCARDS_API_BASE`
+- `FAZERCARDS_API_KEY`
+- `MAX_API_BASE`
+- `MAX_BOT_TOKEN`
+- `PORT` optional, defaults to `3351`.
+- `ALLOWED_ORIGIN` optional, defaults to `*`.
+- `STATIC_DIR` optional, points to the built React app.
 
-```bash
-npm run dev
-```
-
-## Calling it from the mini-app
-
-```ts
-const res = await fetch('https://your-backend.example/api/intents', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    type: 'pay',
-    telegramUserId: 999888777,
-    amount: '5.00',
-  }),
-});
-const intent = await res.json();
-// intent.data.operationId — pass to sdk.operations.requestConfirmation(...)
-```
-
-## Request signing
-
-The signature header is computed exactly as documented:
-
-```
-X-Sdk-App-Signature = hex(HMAC-SHA256(api_secret, `${ts}.${METHOD}.${path}.${sha256(body)}`))
-```
-
-with `path = '/api/apps/v1/intents'`. Drift > 5 minutes returns
-`STALE_REQUEST` (401) from AW.
+`MAX_API_BASE` and `MAX_BOT_TOKEN` are prepared for the next integration step. They are exported from the root `config.mjs` but no MAX API calls are implemented yet.

@@ -1,13 +1,11 @@
-# Example Embed App — React
+# MAX Digital Market React App
 
-React 19 + Vite demo for [`@antarctic-wallet/aw-sdk`](https://www.npmjs.com/package/@antarctic-wallet/aw-sdk).
+Vite + React storefront for Telegram, Steam, gift cards, and game top-ups.
 
 ```bash
 npm install
-npm run dev        # dev server on http://localhost:5175
-npm run build      # production build → ./dist
+npm run dev
+npm run build
 ```
 
-Entry file: [`src/App.tsx`](./src/App.tsx) — types, helpers, SDK bootstrap, operations and UI in one place.
-
-App metadata & required scopes live in [`public/config.json`](./public/config.json).
+The app loads live catalog data from `/api/fazercards/violet-catalog` when served by the backend and falls back to the local catalog shape when the upstream data is unavailable.

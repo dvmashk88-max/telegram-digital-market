@@ -1,51 +1,22 @@
-/**
- * Example DApp backend — Express reference implementation of the Antarctic
- * Wallet B2B intents flow. Use this as a starting point for your own server.
- *
- * Responsibilities:
- *   - Hold the api_secret server-side so the browser cannot reach it.
- *   - Sign every B2B request with HMAC-SHA256 over `{ts}.{METHOD}.{path}.{sha256(body)}`.
- *   - Expose a small REST API the mini-app can call from the browser.
- *   - Optionally serve the demo mini-apps as static files.
- *
- * Endpoints:
- *   POST /api/intents → forwards body to AW `/api/apps/v1/intents`
- *   GET  /api/fazercards/giftcards → proxies FazerCards gift cards
- *   GET  /api/fazercards/violet-catalog → normalized read-only Violet catalog matches
- *   GET  /config.json → frontend config with AW_APP_ID injected at runtime
- *   GET  /health      → liveness probe
- *
- * Required env (see .env.example):
- *   AW_APP_ID
- *   AW_API_BASE, AW_API_KEY, AW_API_SECRET
- *   FAZERCARDS_API_BASE, FAZERCARDS_API_KEY
- *   PORT (default 3351)
- *   ALLOWED_ORIGIN (default *)
- *   STATIC_DIR (optional — serve files from this folder for non-API paths)
- */
 import express from 'express';
-import { createHash, createHmac } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ALLOWED_ORIGIN,
+  FAZERCARDS_API_BASE,
+  FAZERCARDS_API_KEY,
+  PORT,
+  STATIC_DIR as STATIC_DIR_FROM_ENV,
+} from '../../config.mjs';
 
-const PORT = Number.parseInt(process.env.PORT ?? '3351', 10);
-const AW_APP_ID = process.env.AW_APP_ID ?? '';
-const AW_API_BASE = process.env.AW_API_BASE ?? '';
-const AW_API_KEY = process.env.AW_API_KEY ?? '';
-const AW_API_SECRET = process.env.AW_API_SECRET ?? '';
-const FAZERCARDS_API_BASE = process.env.FAZERCARDS_API_BASE ?? '';
-const FAZERCARDS_API_KEY = process.env.FAZERCARDS_API_KEY ?? '';
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR_CANDIDATES = [
-  process.env.STATIC_DIR,
+  STATIC_DIR_FROM_ENV,
   path.resolve(__dirname, '../react/dist'),
   path.resolve(process.cwd(), 'examples/react/dist'),
 ].filter(Boolean);
 const STATIC_DIR = STATIC_DIR_CANDIDATES.find((dir) => existsSync(path.join(dir, 'index.html'))) ?? '';
-
-const VALID_TYPES = new Set(['pay', 'receive', 'scopes']);
 
 const VIOLET_PRODUCT_MATCHERS = [
   {
@@ -110,8 +81,8 @@ const VIOLET_PRODUCT_MATCHERS = [
   },
 ];
 
-const ANTARCTIC_USDT_RATE_RUB = 77.95;
-const APP_STORE_MARKUP_RATE = 0.5;
+const USD_TO_RUB = 90;
+const MARKUP_PERCENT = 50;
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -161,74 +132,10 @@ function resolveOrderFlow(productId, source) {
   };
 }
 
-if (!AW_API_BASE || !AW_API_KEY || !AW_API_SECRET) {
-  console.warn(
-    '[boot] Missing AW_API_BASE / AW_API_KEY / AW_API_SECRET — /api/intents will return 500 until they are set.',
-  );
-}
-
-if (!AW_APP_ID) {
-  console.warn('[boot] Missing AW_APP_ID — /config.json will not have a registered wallet app id.');
-}
-
 if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {
   console.warn(
     '[boot] Missing FAZERCARDS_API_BASE / FAZERCARDS_API_KEY — /api/fazercards/giftcards will return 500 until they are set.',
   );
-}
-
-const sha256Hex = (msg) => createHash('sha256').update(msg, 'utf8').digest('hex');
-const hmacSha256Hex = (secret, msg) =>
-  createHmac('sha256', secret).update(msg, 'utf8').digest('hex');
-
-/**
- * Validates and shapes the request the browser sends us into the exact body
- * the AW B2B endpoint expects. `apiKey` / `apiSecret` / `apiBase` are
- * extracted out — they configure the upstream call but are NOT forwarded.
- */
-function buildIntentPayload(input) {
-  const { type, telegramUserId, amount, scopes } = input ?? {};
-  if (!VALID_TYPES.has(type)) throw new Error('INVALID_TYPE');
-  const telegramUserIdNum = Number(telegramUserId);
-  if (!Number.isInteger(telegramUserIdNum) || telegramUserIdNum <= 0) {
-    throw new Error('INVALID_TELEGRAM_USER_ID');
-  }
-  if (type === 'scopes') {
-    const list = Array.isArray(scopes)
-      ? scopes.filter((s) => typeof s === 'string' && s.length > 0)
-      : [];
-    if (list.length === 0) throw new Error('SCOPES_REQUIRED');
-    return { type, telegram_user_id: telegramUserIdNum, data: { scopes: list } };
-  }
-  if (typeof amount !== 'string' || amount.trim() === '') throw new Error('AMOUNT_REQUIRED');
-  return { type, telegram_user_id: telegramUserIdNum, data: { amount } };
-}
-
-/** Signs and POSTs the B2B intent request to AW using the supplied creds. */
-async function forwardIntent(payload, creds) {
-  const path = '/api/apps/v1/intents';
-  const method = 'POST';
-  const raw = JSON.stringify(payload);
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const signature = hmacSha256Hex(
-    creds.apiSecret,
-    `${timestamp}.${method}.${path}.${sha256Hex(raw)}`,
-  );
-  const url = `${creds.apiBase.replace(/\/$/, '')}${path}`;
-  console.log('[forward]', method, url, 'body=', raw);
-  const upstream = await fetch(url, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Sdk-App-Key': creds.apiKey,
-      'X-Sdk-App-Timestamp': timestamp,
-      'X-Sdk-App-Signature': signature,
-    },
-    body: raw,
-  });
-  const body = await upstream.text();
-  console.log('[forward] upstream status=', upstream.status, 'body=', body.slice(0, 200));
-  return { status: upstream.status, body };
 }
 
 async function fetchFazerCardsJson(path, searchParams = {}) {
@@ -318,22 +225,9 @@ function parseGiftCardNominal(offer, expectedCurrency) {
 }
 
 function calculateSalePriceFromPurchaseUsd(purchasePriceUsd) {
-  const priceUsdt = roundStorePriceUsdt(purchasePriceUsd * (1 + APP_STORE_MARKUP_RATE));
   return {
-    priceUsdt,
-    priceRubApprox: Math.round(priceUsdt * ANTARCTIC_USDT_RATE_RUB),
+    priceRub: Math.round(purchasePriceUsd * USD_TO_RUB * (1 + MARKUP_PERCENT / 100)),
   };
-}
-
-function roundStorePriceUsdt(priceUsdt) {
-  const ceilToTenth = (value) => Number((Math.ceil((value - Number.EPSILON) * 10) / 10).toFixed(2));
-  if (priceUsdt < 1) {
-    return Math.max(0.5, ceilToTenth(priceUsdt));
-  }
-  if (priceUsdt < 10) {
-    return ceilToTenth(priceUsdt);
-  }
-  return Math.ceil(priceUsdt - Number.EPSILON);
 }
 
 function normalizePricedOffer(categoryId, offer, options = {}) {
@@ -598,22 +492,7 @@ app.get('/config.json', (_req, res) => {
     return res.status(404).json({ error: 'CONFIG_NOT_FOUND' });
   }
 
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    const fallbackId = typeof config.id === 'string' ? config.id : '';
-    const resolvedAppId = AW_APP_ID || fallbackId;
-    res.json({
-      ...config,
-      id: resolvedAppId,
-      diagnostics: {
-        awAppIdPresent: Boolean(AW_APP_ID),
-        appIdSource: AW_APP_ID ? 'env' : fallbackId ? 'fallback' : 'missing',
-      },
-    });
-  } catch (error) {
-    console.error('[config] failed to read frontend config', error);
-    res.status(500).json({ error: 'CONFIG_READ_FAILED' });
-  }
+  res.type('application/json').sendFile(configPath);
 });
 
 app.get('/api/fazercards/giftcards', async (_req, res) => {
@@ -682,38 +561,6 @@ app.get('/api/fazercards/violet-catalog', async (_req, res) => {
   }
 });
 
-app.post('/api/intents', express.json({ limit: '64kb' }), async (req, res) => {
-  // DEMO ONLY: this server accepts apiKey/apiSecret directly from the request
-  // body so integrators can experiment without setting them in env. NEVER do
-  // this in real apps — your secret stays only on YOUR backend.
-  const apiBase = (req.body?.apiBase || AW_API_BASE || '').toString();
-  const apiKey = (req.body?.apiKey || AW_API_KEY || '').toString();
-  const apiSecret = (req.body?.apiSecret || AW_API_SECRET || '').toString();
-  if (!apiBase || !apiKey || !apiSecret) {
-    return res.status(400).json({
-      error: 'MISSING_CREDENTIALS',
-      hint: 'Pass apiBase + apiKey + apiSecret in the request body, or configure them server-side via env.',
-    });
-  }
-  let payload;
-  try {
-    payload = buildIntentPayload(req.body);
-  } catch (error) {
-    return res.status(422).json({ error: error.message });
-  }
-  try {
-    const upstream = await forwardIntent(payload, { apiBase, apiKey, apiSecret });
-    res
-      .status(upstream.status)
-      .set('X-Demo-Warning', 'apiKey/apiSecret accepted from request body - DEMO ONLY, never expose your secret in browsers')
-      .type('application/json')
-      .send(upstream.body);
-  } catch (error) {
-    console.error('[intents] upstream error', error);
-    res.status(502).json({ error: 'UPSTREAM_FAILURE' });
-  }
-});
-
 if (STATIC_DIR) {
   app.get('/app-icon.svg', (_req, res) => {
     res.type('image/svg+xml').sendFile(path.resolve(STATIC_DIR, 'icon.svg'));
@@ -721,14 +568,6 @@ if (STATIC_DIR) {
 
   app.get('/favicon.ico', (_req, res) => {
     res.type('image/svg+xml').sendFile(path.resolve(STATIC_DIR, 'icon.svg'));
-  });
-
-  app.get(/^\/antarctic-violet\/$/, (_req, res) => {
-    res.redirect(301, '/antarctic-violet');
-  });
-
-  app.get(/^\/antarctic-violet$/, (_req, res) => {
-    res.sendFile(path.resolve(STATIC_DIR, 'index.html'));
   });
 
   app.use(express.static(STATIC_DIR, { extensions: ['html'] }));

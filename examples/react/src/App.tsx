@@ -1,40 +1,7 @@
-/**
- * Antarctic Violet (React) — storefront prototype inside Antarctic Wallet.
- *
- * Standalone run: http://localhost:5175
- * When embedded: the wallet loads this app inside an iframe and passes its
- * origin via the ?parentOrigin=... query parameter.
- */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  AWSDK,
-  AWInitError,
-  AWOperationError,
-  AWScopeError,
-  AWSessionError,
-  AWTimeoutError,
-} from '@antarctic-wallet/aw-sdk';
-import type { AWSession, AWUserContext } from '@antarctic-wallet/aw-sdk';
+import { useEffect, useMemo, useState } from 'react';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-interface AppConfig {
-  id: string;
-  name: string;
-  requiredScopes: string[];
-  diagnostics?: {
-    awAppIdPresent?: boolean;
-    appIdSource?: 'env' | 'fallback' | 'missing';
-  };
-}
-
-interface LogEntry {
-  time: string;
-  message: string;
-  type: 'info' | 'success' | 'error' | 'warn';
-}
-
-type AppStatus = 'idle' | 'connecting' | 'ready' | 'error';
 type CategoryId = 'telegram' | 'steam' | 'gift-cards' | 'game-top-up';
 type OrderStatus = 'idle' | 'preview';
 type OrderFlow = 'code_delivery' | 'steam_balance' | 'telegram_stars' | 'telegram_premium' | 'game_balance';
@@ -75,8 +42,7 @@ interface VioletCatalogItem {
   denominations: number[];
   supplierPrice: string | number | null;
   rawPriceUsd?: string | number | null;
-  priceUsdt?: number;
-  priceRubApprox?: number;
+  priceRub?: number;
   available: boolean;
   orderFlow?: OrderFlow;
   orderEndpoint?: string | null;
@@ -94,13 +60,9 @@ interface VioletCatalogOffer {
   stock?: number | null;
   minOrderQuantity?: number | null;
   maxOrderQuantity?: number | null;
-  priceUsdt?: number;
-  priceRubApprox?: number;
+  priceRub?: number;
 }
 
-const APP_ID_STORAGE_KEY = 'aw-demo:appId';
-const AW_SDK_SESSION_STORAGE_PREFIX = 'aw-sdk:session:';
-const AW_SDK_STORAGE_PREFIX = 'aw-sdk:';
 const VIOLET_CATALOG_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/fazercards/violet-catalog'
@@ -114,7 +76,6 @@ const CATEGORIES: Category[] = [
   { id: 'telegram', name: 'Telegram', subtitle: 'Stars и Premium' },
 ];
 
-const ANTARCTIC_USDT_RATE_RUB = 77.95;
 const APP_STORE_POPULAR_NOMINALS: Record<string, number[]> = {
   'apple-tr': [10, 50, 100, 250, 500, 1000],
   'apple-us': [5, 10, 25, 50, 100, 200],
@@ -248,124 +209,6 @@ const PRODUCTS: Product[] = [
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function resolveStoredAppId(): string | null {
-  const params = new URLSearchParams(window.location.search);
-  const fromQuery = params.get('appId');
-  if (fromQuery) {
-    try {
-      localStorage.setItem(APP_ID_STORAGE_KEY, fromQuery);
-    } catch {
-      //
-    }
-    return fromQuery;
-  }
-  try {
-    return localStorage.getItem(APP_ID_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function getParentOrigin(insideWallet: boolean): string | null {
-  const params = new URLSearchParams(window.location.search);
-  const fromParam = params.get('parentOrigin');
-  if (fromParam) return fromParam;
-
-  const ancestorOrigins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
-  const fromAncestor = ancestorOrigins?.[0];
-  if (fromAncestor) return fromAncestor;
-
-  if (window.parent !== window && document.referrer) {
-    try {
-      return new URL(document.referrer).origin;
-    } catch {
-      //
-    }
-  }
-  if (insideWallet) return null;
-  return 'https://localhost:3310';
-}
-
-function resolveSdkAppId(configId: string, requestedAppId: string | null, insideWallet: boolean): string {
-  const params = new URLSearchParams(window.location.search);
-  if (insideWallet) return configId;
-  return requestedAppId ?? params.get('appId') ?? configId;
-}
-
-function removeStorageKeys(
-  storage: Storage,
-  shouldRemove: (key: string) => boolean,
-): string[] {
-  const removed: string[] = [];
-  for (let index = storage.length - 1; index >= 0; index -= 1) {
-    const key = storage.key(index);
-    if (!key || !shouldRemove(key)) continue;
-    storage.removeItem(key);
-    removed.push(key);
-  }
-  return removed;
-}
-
-function clearWalletSdkStorageCache(insideWallet: boolean): string[] {
-  const removed: string[] = [];
-
-  try {
-    const sessionKeys = removeStorageKeys(sessionStorage, (key) =>
-      key.startsWith(AW_SDK_SESSION_STORAGE_PREFIX),
-    );
-    removed.push(...sessionKeys.map((key) => `sessionStorage:${key}`));
-  } catch {
-    //
-  }
-
-  try {
-    const localSdkKeys = removeStorageKeys(localStorage, (key) =>
-      key.startsWith(AW_SDK_STORAGE_PREFIX),
-    );
-    removed.push(...localSdkKeys.map((key) => `localStorage:${key}`));
-
-    if (insideWallet && localStorage.getItem(APP_ID_STORAGE_KEY) !== null) {
-      localStorage.removeItem(APP_ID_STORAGE_KEY);
-      removed.push(`localStorage:${APP_ID_STORAGE_KEY}`);
-    }
-  } catch {
-    //
-  }
-
-  return removed;
-}
-
-function handleSdkError(error: unknown): string {
-  if (error instanceof AWOperationError) {
-    return `Ошибка операции [${error.errorCode}]: ${error.message} (opId: ${error.operationId})`;
-  }
-  if (error instanceof AWInitError) return `Ошибка инициализации [${error.errorCode}]: ${error.message}`;
-  if (error instanceof AWSessionError) return `Ошибка сессии [${error.errorCode}]: ${error.message}`;
-  if (error instanceof AWScopeError) return `Ошибка доступа [${error.errorCode}]: ${error.message}`;
-  if (error instanceof AWTimeoutError) return `Превышено время ожидания: ${error.message}`;
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function formatStatus(status: AppStatus): string {
-  const labels: Record<AppStatus, string> = {
-    idle: 'ожидание',
-    connecting: 'подключение',
-    ready: 'готово',
-    error: 'ошибка',
-  };
-  return labels[status];
-}
-
-function formatAppIdSource(source: 'env' | 'fallback' | 'missing'): string {
-  const labels: Record<'env' | 'fallback' | 'missing', string> = {
-    env: 'переменная окружения',
-    fallback: 'конфиг',
-    missing: 'не найден',
-  };
-  return labels[source];
-}
-
 function formatCategoryLabel(categoryId: CategoryId): string {
   const labels: Record<CategoryId, string> = {
     telegram: 'Telegram',
@@ -376,28 +219,18 @@ function formatCategoryLabel(categoryId: CategoryId): string {
   return labels[categoryId];
 }
 
-function formatUsdt(amount: number): string {
-  return `${Number.isInteger(amount) ? amount.toString() : amount.toFixed(2)} USDT`;
-}
-
 function formatRub(amount: number): string {
   return `${Math.round(amount).toLocaleString('ru-RU')} ₽`;
 }
 
 function formatNominalAmount(amount: number, currency?: VioletCatalogOffer['currency']): string {
   if (currency === 'RUB') return formatRub(amount);
-  if (currency) return `${amount.toLocaleString('ru-RU')} ${currency}`;
-  return formatUsdt(amount);
+  return amount.toLocaleString('ru-RU');
 }
 
 function formatOfferNominal(offer: VioletCatalogOffer, product: Product): string {
   if (!offer.currency && !product.nominalCurrency && offer.name) return offer.name;
   return formatNominalAmount(offer.nominal, offer.currency ?? product.nominalCurrency);
-}
-
-function maskIdentifier(value: string): string {
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function isAppStoreProduct(product: Product): boolean {
@@ -407,14 +240,13 @@ function isAppStoreProduct(product: Product): boolean {
 function resolveProductOffers(product: Product, meta: VioletCatalogItem | null): VioletCatalogOffer[] {
   if (meta?.offers?.length) return meta.offers;
   if (meta) {
-    if (meta.denominations.length && meta.priceUsdt && meta.rawPriceUsd) {
+    if (meta.denominations.length && meta.priceRub && meta.rawPriceUsd) {
       return meta.denominations.map((nominal) => ({
         cardId: meta.cardId,
         nominal,
         name: null,
         rawPriceUsd: meta.rawPriceUsd,
-        priceUsdt: meta.priceUsdt,
-        priceRubApprox: meta.priceRubApprox,
+        priceRub: meta.priceRub,
       }));
     }
     return [];
@@ -545,24 +377,6 @@ function isOrderFieldFilled(field: OrderFieldKey, orderFields: OrderFields): boo
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function App() {
-  const [config, setConfig] = useState<AppConfig | null>(null);
-  const [status, setStatus] = useState<AppStatus>('idle');
-  const [session, setSession] = useState<AWSession | null>(null);
-  const [user, setUser] = useState<AWUserContext | null>(null);
-  const [sdkError, setSdkError] = useState<string | null>(null);
-  const [sdkDiagnostics, setSdkDiagnostics] = useState({
-    appId: '',
-    requestedAppId: '',
-    awAppIdPresent: false,
-    appIdSource: 'missing' as 'env' | 'fallback' | 'missing',
-    origin: '',
-    parentOrigin: '',
-    scopes: [] as string[],
-  });
-  const [insideWallet, setInsideWallet] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [appId, setAppId] = useState<string | null>(() => resolveStoredAppId());
-  const [appIdInput, setAppIdInput] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('gift-cards');
   const [selectedProductId, setSelectedProductId] = useState('apple-tr');
   const [selectedOffer, setSelectedOffer] = useState<VioletCatalogOffer | null>(null);
@@ -573,135 +387,7 @@ export function App() {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
 
-  const sdkRef = useRef<AWSDK | null>(null);
-
-  const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
-    setLogs((prev) => [...prev, { time: new Date().toLocaleTimeString(), message, type }]);
-  }, []);
-
-  /**
-   * Full SDK bootstrap — preserved from the Antarctic Wallet example:
-   * detects iframe mode, loads app config, opens postMessage channel,
-   * subscribes to SDK events, and performs sdk.init().
-   */
   useEffect(() => {
-    let destroyed = false;
-    const detectedInsideWallet = AWSDK.isInsideWallet();
-    setInsideWallet(detectedInsideWallet);
-    setSdkError(null);
-    addLog(`Запуск внутри кошелька: ${detectedInsideWallet ? 'да' : 'нет'}`);
-
-    if (!appId && !detectedInsideWallet) {
-      addLog('Ожидается App ID...', 'warn');
-      return;
-    }
-
-    (async () => {
-      const cfg: AppConfig = await fetch('/config.json').then((r) => r.json());
-      if (destroyed) return;
-      setConfig(cfg);
-
-      const parentOrigin = getParentOrigin(detectedInsideWallet);
-      if (!parentOrigin) {
-        const message = 'Origin кошелька недоступен. Откройте приложение из Antarctic Wallet Dev Mode или передайте ?parentOrigin=<wallet-origin>.';
-        addLog(message, 'error');
-        setSdkError(message);
-        setStatus('error');
-        return;
-      }
-      const sdkAppId = resolveSdkAppId(cfg.id, appId, detectedInsideWallet);
-      const scopes = [...cfg.requiredScopes];
-      setSdkDiagnostics({
-        appId: sdkAppId,
-        requestedAppId: appId ?? '',
-        awAppIdPresent: Boolean(cfg.diagnostics?.awAppIdPresent),
-        appIdSource: cfg.diagnostics?.appIdSource ?? (cfg.id ? 'fallback' : 'missing'),
-        origin: window.location.origin,
-        parentOrigin,
-        scopes,
-      });
-      addLog(`Инициализация SDK appId: ${sdkAppId}`);
-      addLog(`AW_APP_ID найден: ${Boolean(cfg.diagnostics?.awAppIdPresent) ? 'да' : 'нет'}`);
-      addLog(`Источник appId: ${formatAppIdSource(cfg.diagnostics?.appIdSource ?? (cfg.id ? 'fallback' : 'missing'))}`);
-      addLog(`origin: ${window.location.origin}`);
-      addLog(`parentOrigin: ${parentOrigin}`);
-      addLog(`scopes: ${scopes.join(', ')}`);
-
-      const sdk = new AWSDK({
-        appId: sdkAppId,
-        scopes,
-        parentOrigin,
-        debug: true,
-        timeout: 30_000,
-        persistSession: false,
-        retry: { maxAttempts: 3, baseDelay: 1000 },
-      });
-      sdkRef.current = sdk;
-
-      sdk.events.on('sdk.ready', (s: AWSession) => {
-        addLog('SDK готов к работе.', 'success');
-        setStatus('ready');
-        setSession(s);
-        setUser(s.userContext ?? null);
-        setSdkError(null);
-      });
-
-      sdk.events.on('sdk.error', ({ code, message }) => {
-        addLog(`Ошибка SDK: [${code}] ${message}`, 'error');
-        setSdkError(`[${code}] ${message}`);
-        setStatus('error');
-      });
-
-      sdk.events.on('scopes.granted', ({ scopes }) =>
-        addLog(`Доступы подтверждены: ${scopes.join(', ')}`, 'success'),
-      );
-
-      sdk.events.on('session.refreshed', ({ sessionToken, expiresAt }) => {
-        addLog(`Сессия обновлена, действует до ${new Date(expiresAt).toLocaleTimeString()}`);
-        setSession((prev) => (prev ? { ...prev, sessionToken, expiresAt } : prev));
-      });
-
-      sdk.events.on('session.expired', () => {
-        addLog('Сессия истекла.', 'warn');
-        setSdkError('Сессия кошелька истекла. Откройте приложение заново из Antarctic Wallet.');
-        setStatus('error');
-        setSession(null);
-        setUser(null);
-      });
-
-      sdk.events.on('operation.rejected', ({ operationId, reason }) =>
-        addLog(`Операция ${operationId} отклонена: ${reason}`, 'warn'),
-      );
-
-      const clearedStorageKeys = clearWalletSdkStorageCache(detectedInsideWallet);
-      if (clearedStorageKeys.length > 0) {
-        addLog(`Кэш SDK очищен: ${clearedStorageKeys.join(', ')}`);
-      } else {
-        addLog('Кэш SDK для очистки не найден.');
-      }
-
-      addLog('Инициализация SDK...');
-      setStatus('connecting');
-      try {
-        await sdk.init();
-      } catch (error) {
-        if (destroyed) return;
-        const message = handleSdkError(error);
-        addLog(`Инициализация не выполнена: ${message}`, 'error');
-        setSdkError(message);
-        setStatus('error');
-      }
-    })();
-
-    return () => {
-      destroyed = true;
-      sdkRef.current?.destroy();
-      sdkRef.current = null;
-    };
-  }, [addLog, appId]);
-
-  useEffect(() => {
-    if (!appId && !insideWallet) return;
     let cancelled = false;
 
     async function loadVioletCatalog() {
@@ -732,46 +418,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [appId, insideWallet]);
-
-  function submitAppId(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = appIdInput.trim();
-    if (!trimmed) return;
-    try {
-      localStorage.setItem(APP_ID_STORAGE_KEY, trimmed);
-    } catch {
-      //
-    }
-    setAppId(trimmed);
-  }
-
-  function changeAppId() {
-    try {
-      localStorage.removeItem(APP_ID_STORAGE_KEY);
-    } catch {
-      //
-    }
-    sdkRef.current?.destroy();
-    sdkRef.current = null;
-    setAppId(null);
-    setAppIdInput('');
-    setConfig(null);
-    setSession(null);
-    setUser(null);
-    setSdkError(null);
-    setSdkDiagnostics({
-      appId: '',
-      requestedAppId: '',
-      awAppIdPresent: false,
-      appIdSource: 'missing',
-      origin: '',
-      parentOrigin: '',
-      scopes: [],
-    });
-    setStatus('idle');
-    setLogs([]);
-  }
+  }, []);
 
   const visibleProducts = useMemo(
     () => PRODUCTS.filter((product) => product.category === selectedCategory),
@@ -799,29 +446,13 @@ export function App() {
     [displayableSelectedProductOffers, selectedProduct, showAllDenominations],
   );
 
-  const clientPrice =
-    selectedOffer === null
-      ? null
-      : selectedOffer.priceUsdt ?? null;
-  const clientPriceRub =
-    selectedOffer?.priceRubApprox ?? (clientPrice === null ? null : Math.round(clientPrice * ANTARCTIC_USDT_RATE_RUB));
+  const clientPriceRub = selectedOffer?.priceRub ?? null;
   const selectedOrderFlow = resolveOrderFlow(selectedProduct, selectedProductMeta);
   const requiredOrderFields = getRequiredOrderFields(selectedOrderFlow, selectedProductMeta);
   const canContinue =
     selectedProduct !== null &&
-    clientPrice !== null &&
+    clientPriceRub !== null &&
     requiredOrderFields.every((field) => isOrderFieldFilled(field, orderFields));
-  const walletSessionSummary = useMemo(() => {
-    if (sdkError) return sdkError;
-    if (!session) return 'Ожидаем подключение кошелька';
-    const parts = [
-      user?.displayName,
-      user?.walletAddress ? maskIdentifier(user.walletAddress) : null,
-      user?.userId ? `Пользователь ${maskIdentifier(user.userId)}` : null,
-    ].filter(Boolean);
-    return parts.length > 0 ? parts.join(' • ') : 'Сессия кошелька активна';
-  }, [sdkError, session, user]);
-
   function selectCategory(categoryId: CategoryId) {
     const firstProduct = PRODUCTS.find((product) => product.category === categoryId);
     if (!firstProduct) return;
@@ -874,73 +505,16 @@ export function App() {
     setOrderStatus('idle');
   }, [displayableSelectedProductOffers, selectedOffer, selectedProduct]);
 
-  if (!appId && !insideWallet) {
-    return (
-      <div className="app app--narrow">
-        <header className="header">
-          <h1 className="header__title">{APP_DISPLAY_NAME}</h1>
-          <div className="header__badges">
-            <span className={insideWallet ? 'badge -inside' : 'badge -outside'}>
-              {insideWallet ? 'В кошельке' : 'Отдельный запуск'}
-            </span>
-          </div>
-        </header>
-        <section className="panel">
-          <div className="panel__title">Введите ID приложения</div>
-          <form onSubmit={submitAppId}>
-            <input
-              className="input"
-              type="text"
-              autoFocus
-              placeholder="ID приложения"
-              value={appIdInput}
-              onChange={(e) => setAppIdInput(e.target.value)}
-            />
-            <button className="btn -accent" type="submit" disabled={!appIdInput.trim()}>
-              Продолжить
-            </button>
-          </form>
-        </section>
-      </div>
-    );
-  }
-
   return (
     <div className="app">
       <header className="violet-header">
         <div>
-          <div className="eyebrow">Сервисы Antarctic</div>
+          <div className="eyebrow">MAX Digital Market</div>
           <h1 className="violet-title">{APP_DISPLAY_NAME}</h1>
           <p className="violet-copy">
             Витрина цифровых товаров для Telegram, Steam, подарочных карт
-            и игровых пополнений внутри Antarctic Wallet.
+            и игровых пополнений.
           </p>
-        </div>
-        <div className="wallet-card">
-          <div className="wallet-card__row">
-            <span className={insideWallet ? 'badge -inside' : 'badge -outside'}>
-              {insideWallet ? 'В кошельке' : 'Отдельный запуск'}
-            </span>
-            <span className={`status-dot -${status}`} />
-            <span className="status-label">{formatStatus(status)}</span>
-          </div>
-          <div className="wallet-card__meta">
-            {walletSessionSummary}
-          </div>
-          <div className="wallet-card__diagnostics">
-            <span>ID приложения: {sdkDiagnostics.appId || 'ожидается'}</span>
-            <span>AW_APP_ID: {sdkDiagnostics.awAppIdPresent ? 'найден' : 'не найден'}</span>
-            <span>Источник: {formatAppIdSource(sdkDiagnostics.appIdSource)}</span>
-            {sdkDiagnostics.requestedAppId && sdkDiagnostics.requestedAppId !== sdkDiagnostics.appId && (
-              <span>ID приложения из URL проигнорирован: {sdkDiagnostics.requestedAppId}</span>
-            )}
-            <span>Адрес приложения: {sdkDiagnostics.origin || window.location.origin}</span>
-            <span>Адрес кошелька: {sdkDiagnostics.parentOrigin || 'ожидается'}</span>
-            <span>Доступы: {sdkDiagnostics.scopes.join(', ') || 'ожидаются'}</span>
-          </div>
-          <button className="btn-link" onClick={changeAppId} type="button">
-            Изменить ID приложения
-          </button>
         </div>
       </header>
 
@@ -1135,11 +709,11 @@ export function App() {
               Номинал: {selectedOffer ? formatOfferNominal(selectedOffer, selectedProduct) : 'не выбран'}
             </span>
             <strong className="total-box__amount">
-              {clientPrice === null ? 'нет номинала' : `К оплате: ${formatUsdt(clientPrice)}`}
+              {clientPriceRub === null ? 'нет цены' : `К оплате: ${formatRub(clientPriceRub)}`}
             </strong>
-            <span className="total-box__rub">
-              {clientPriceRub === null ? 'Ожидаем реальные данные FazerCards' : `≈ ${formatRub(clientPriceRub)}`}
-            </span>
+            {clientPriceRub === null && (
+              <span className="total-box__rub">Ожидаем реальные данные FazerCards</span>
+            )}
             <span className="total-box__delivery">
               Получение: {getDeliverySummary(selectedOrderFlow)}
             </span>
@@ -1154,7 +728,7 @@ export function App() {
               <strong>Предпросмотр заказа готов</strong>
               <span>Товар: {selectedProduct.name}</span>
               <span>Вариант: {selectedOffer ? formatOfferNominal(selectedOffer, selectedProduct) : 'не выбран'}</span>
-              <span>К оплате: {clientPrice === null ? 'нет номинала' : formatUsdt(clientPrice)}</span>
+              <span>К оплате: {clientPriceRub === null ? 'нет цены' : formatRub(clientPriceRub)}</span>
               <span>Получение: {getDeliverySummary(selectedOrderFlow)}</span>
               {selectedOrderFlow === 'steam_balance' && (
                 <span>Steam логин: {orderFields.steamLogin.trim()}</span>

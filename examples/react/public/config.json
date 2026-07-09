@@ -1,11 +1,8 @@
 {
   "id": "",
-  "name": "Antarctic Violet",
+  "name": "MAX Digital Market",
   "shortDescription": "Digital goods storefront prototype",
-  "description": "A premium mock storefront for Telegram, Steam, gift cards, and game top-ups inside Antarctic Wallet.",
+  "description": "A digital goods storefront for Telegram, Steam, gift cards, and game top-ups.",
   "icon": "/app-icon.svg",
-  "category": "utilities",
-  "requiredScopes": [
-    "user.profile.read"
-  ]
+  "category": "utilities"
 }

@@ -35,31 +35,6 @@ button {
   padding: 24px;
 }
 
-.app--narrow {
-  width: min(480px, 100%);
-}
-
-.header {
-  margin-bottom: 20px;
-}
-
-.header__title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 800;
-  color: #f4f2ff;
-}
-
-.header__badges {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.panel,
-.wallet-card,
 .checkout-panel,
 .product-card,
 .selected-product,
@@ -68,20 +43,6 @@ button {
   background: rgba(16, 17, 34, 0.68);
   box-shadow: 0 18px 54px rgba(0, 0, 0, 0.26);
   backdrop-filter: blur(18px);
-}
-
-.panel {
-  padding: 18px;
-  border-radius: 8px;
-}
-
-.panel__title {
-  margin-bottom: 12px;
-  color: #aba6d8;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .input {
@@ -141,49 +102,7 @@ button {
   padding: 0;
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.badge.-inside {
-  background: rgba(16, 185, 129, 0.16);
-  color: #67e8b9;
-}
-
-.badge.-outside {
-  background: rgba(245, 158, 11, 0.15);
-  color: #fcd27a;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.status-dot.-idle { background: #7c789b; }
-.status-dot.-connecting { background: #f5c95c; }
-.status-dot.-ready { background: #4ade80; }
-.status-dot.-error { background: #fb7185; }
-
-.status-label {
-  color: #b8b1e6;
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: capitalize;
-}
-
 .violet-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px;
-  gap: 18px;
-  align-items: start;
   margin-bottom: 22px;
 }
 
@@ -210,36 +129,6 @@ button {
   color: #bbb6db;
   font-size: 16px;
   line-height: 1.55;
-}
-
-.wallet-card {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 8px;
-}
-
-.wallet-card__row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.wallet-card__meta {
-  color: #f4f2ff;
-  font-size: 13px;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
-
-.wallet-card__diagnostics {
-  display: grid;
-  gap: 3px;
-  color: #9c96c9;
-  font-size: 11px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 
 .category-tabs {
@@ -608,7 +497,6 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .wallet-card,
   .checkout-panel {
     position: static;
   }

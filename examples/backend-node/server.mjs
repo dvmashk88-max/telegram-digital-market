@@ -492,7 +492,7 @@ app.get('/config.json', (_req, res) => {
     return res.status(404).json({ error: 'CONFIG_NOT_FOUND' });
   }
 
-  res.type('application/json').sendFile(configPath);
+  res.type('application/json').sendFile(path.resolve(configPath));
 });
 
 app.get('/api/fazercards/giftcards', async (_req, res) => {

@@ -8,6 +8,9 @@ Express backend for the React storefront.
 - `GET /config.json` — frontend config from the built static directory.
 - `GET /api/fazercards/giftcards` — FazerCards gift card proxy.
 - `GET /api/fazercards/violet-catalog` — normalized catalog used by the storefront.
+- `GET /api/max/status` — MAX bot configuration status without exposing the token.
+- `POST /api/max/webhook` — MAX Bot API webhook endpoint.
+- `GET /api/max/webhook` — webhook URL helper.
 
 ## Environment
 
@@ -21,4 +24,10 @@ All environment variables are read in the root `config.mjs`.
 - `ALLOWED_ORIGIN` optional, defaults to `*`.
 - `STATIC_DIR` optional, points to the built React app.
 
-`MAX_API_BASE` and `MAX_BOT_TOKEN` are prepared for the next integration step. They are exported from the root `config.mjs` but no MAX API calls are implemented yet.
+The webhook URL for Railway is:
+
+`https://max-bot-production-6049.up.railway.app/api/max/webhook`
+
+To register the webhook using Railway environment variables, run:
+
+`railway run npm run max:set-webhook`

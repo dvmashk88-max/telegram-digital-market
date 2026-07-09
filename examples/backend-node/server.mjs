@@ -9,6 +9,11 @@ import {
   PORT,
   STATIC_DIR as STATIC_DIR_FROM_ENV,
 } from '../../config.mjs';
+import {
+  getMaxStatus,
+  handleMaxWebhookPayload,
+  MAX_WEBHOOK_URL,
+} from './max-bot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR_CANDIDATES = [
@@ -485,6 +490,24 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/max/status', (_req, res) => {
+  res.json(getMaxStatus());
+});
+
+app.post('/api/max/webhook', express.json({ limit: '128kb' }), async (req, res) => {
+  try {
+    const result = await handleMaxWebhookPayload(req.body);
+    res.status(result.ok ? 200 : 202).json(result);
+  } catch (error) {
+    console.error('[max] webhook error', error);
+    res.status(500).json({ ok: false, error: 'MAX_WEBHOOK_FAILURE' });
+  }
+});
+
+app.get('/api/max/webhook', (_req, res) => {
+  res.json({ ok: true, webhookUrl: MAX_WEBHOOK_URL });
+});
 
 app.get('/config.json', (_req, res) => {
   const configPath = STATIC_DIR ? path.join(STATIC_DIR, 'config.json') : '';

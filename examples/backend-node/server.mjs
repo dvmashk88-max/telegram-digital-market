@@ -498,7 +498,7 @@ app.get('/api/max/status', (_req, res) => {
 app.post('/api/max/webhook', express.json({ limit: '128kb' }), async (req, res) => {
   try {
     const result = await handleMaxWebhookPayload(req.body);
-    res.status(result.ok ? 200 : 202).json(result);
+    res.status(200).json(result);
   } catch (error) {
     console.error('[max] webhook error', error);
     res.status(500).json({ ok: false, error: 'MAX_WEBHOOK_FAILURE' });

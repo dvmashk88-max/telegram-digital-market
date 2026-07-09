@@ -21,8 +21,6 @@ function buildMaxUrl(pathname, searchParams = {}) {
   assertMaxConfigured();
 
   const url = new URL(`${trimTrailingSlash(MAX_API_BASE)}${pathname}`);
-  url.searchParams.set('access_token', MAX_BOT_TOKEN);
-  url.searchParams.set('v', '0.0.1');
 
   for (const [key, value] of Object.entries(searchParams)) {
     if (value !== undefined && value !== null && value !== '') {
@@ -36,7 +34,10 @@ function buildMaxUrl(pathname, searchParams = {}) {
 async function callMaxApi(pathname, { method = 'GET', searchParams, body } = {}) {
   const response = await fetch(buildMaxUrl(pathname, searchParams), {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: {
+      Authorization: MAX_BOT_TOKEN,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const responseText = await response.text();
@@ -148,16 +149,29 @@ function getMessageUserId(message) {
   );
 }
 
+function getUpdateUserId(update) {
+  return (
+    update?.user?.user_id ||
+    update?.user?.userId ||
+    update?.payload?.user?.user_id ||
+    update?.payload?.user?.userId ||
+    null
+  );
+}
+
 export async function handleMaxWebhookPayload(payload) {
   const updates = asArray(payload);
   const results = [];
 
   for (const update of updates) {
+    const updateType = update?.update_type || update?.updateType || '';
     const message = getMessageFromUpdate(update);
     const text = getMessageText(message).trim();
-    const userId = getMessageUserId(message);
+    const isStartMessage = text.split(/\s+/, 1)[0] === '/start';
+    const isBotStarted = updateType === 'bot_started';
+    const userId = getMessageUserId(message) || getUpdateUserId(update);
 
-    if (!message || text.split(/\s+/, 1)[0] !== '/start') {
+    if (!isStartMessage && !isBotStarted) {
       results.push({ ok: true, handled: false });
       continue;
     }

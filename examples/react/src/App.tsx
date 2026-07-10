@@ -66,7 +66,7 @@ interface VioletCatalogOffer {
 const VIOLET_CATALOG_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/fazercards/violet-catalog'
-    : 'https://example-app-production-e00d.up.railway.app/api/fazercards/violet-catalog';
+    : `${window.location.origin}/api/fazercards/violet-catalog`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 
 const CATEGORIES: Category[] = [
@@ -231,6 +231,10 @@ function formatNominalAmount(amount: number, currency?: VioletCatalogOffer['curr
 function formatOfferNominal(offer: VioletCatalogOffer, product: Product): string {
   if (!offer.currency && !product.nominalCurrency && offer.name) return offer.name;
   return formatNominalAmount(offer.nominal, offer.currency ?? product.nominalCurrency);
+}
+
+function formatOfferPrice(offer: VioletCatalogOffer): string {
+  return offer.priceRub === undefined ? 'нет цены' : formatRub(offer.priceRub);
 }
 
 function isAppStoreProduct(product: Product): boolean {
@@ -568,7 +572,7 @@ export function App() {
                   <span className="product-card__description">{product.description}</span>
                   <span className="product-card__footer">
                     <span>
-                      {firstOffer ? `от ${formatOfferNominal(firstOffer, product)}` : 'номиналы недоступны'}
+                      {firstOffer ? `от ${formatOfferPrice(firstOffer)}` : 'цены недоступны'}
                     </span>
                     <span>{getProductCatalogState(product, meta)}</span>
                   </span>
@@ -607,7 +611,8 @@ export function App() {
                     setOrderStatus('idle');
                   }}
                 >
-                  {formatOfferNominal(offer, selectedProduct)}
+                  <span>{formatOfferNominal(offer, selectedProduct)}</span>
+                  <small>{formatOfferPrice(offer)}</small>
                 </button>
               ))
             ) : (

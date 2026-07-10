@@ -109,7 +109,7 @@ export async function setMaxWebhook() {
     method: 'POST',
     body: {
       url: MAX_WEBHOOK_URL,
-      update_types: ['message_created'],
+      update_types: ['message_created', 'bot_started'],
     },
   });
 }
@@ -124,6 +124,8 @@ function asArray(value) {
 function getMessageFromUpdate(update) {
   return (
     update?.message ||
+    update?.message_created ||
+    update?.messageCreated ||
     update?.payload?.message ||
     update?.message_created?.message ||
     update?.messageCreated?.message ||
@@ -167,11 +169,12 @@ export async function handleMaxWebhookPayload(payload) {
     const updateType = update?.update_type || update?.updateType || '';
     const message = getMessageFromUpdate(update);
     const text = getMessageText(message).trim();
-    const isStartMessage = text.split(/\s+/, 1)[0] === '/start';
     const isBotStarted = updateType === 'bot_started';
+    const isMessageCreated = updateType === 'message_created';
+    const isTextMessage = text.length > 0;
     const userId = getMessageUserId(message) || getUpdateUserId(update);
 
-    if (!isStartMessage && !isBotStarted) {
+    if (!isBotStarted && (!isMessageCreated || !isTextMessage)) {
       results.push({ ok: true, handled: false });
       continue;
     }

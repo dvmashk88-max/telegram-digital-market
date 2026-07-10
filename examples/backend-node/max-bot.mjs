@@ -4,8 +4,17 @@ export const MINI_APP_URL = 'https://max-bot-production-6049.up.railway.app';
 export const MAX_WEBHOOK_PATH = '/api/max/webhook';
 export const MAX_WEBHOOK_URL = `${MINI_APP_URL}${MAX_WEBHOOK_PATH}`;
 
-const START_MESSAGE =
-  'Добро пожаловать в Маркет цифровых товаров. Нажмите кнопку ниже, чтобы открыть магазин.';
+const START_MESSAGE = `🛒 Добро пожаловать в Маркет цифровых товаров
+
+Здесь можно купить цифровые коды и подарочные карты:
+• Apple / iTunes
+• Steam
+• игры и игровые пополнения
+• Telegram и другие сервисы
+
+Выберите товар в магазине, оплатите заказ и получите код прямо здесь в чате.
+
+Нажмите кнопку ниже, чтобы открыть магазин.`;
 
 function trimTrailingSlash(value) {
   return value.replace(/\/$/, '');
@@ -69,7 +78,7 @@ function buildOpenStoreKeyboard() {
         [
           {
             type: 'link',
-            text: 'Открыть магазин',
+            text: '🛍 Открыть магазин',
             url: MINI_APP_URL,
           },
         ],

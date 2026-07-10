@@ -189,8 +189,12 @@ export async function handleMaxWebhookPayload(payload) {
       results.push({ ok: true, handled: true });
     } catch (error) {
       console.error('[max] failed to handle /start', {
+        name: error.name,
+        message: error.message,
         status: error.status,
         responseBody: error.responseBody,
+        causeCode: error.cause?.code,
+        causeMessage: error.cause?.message,
       });
       results.push({
         ok: false,

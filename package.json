@@ -14,7 +14,7 @@
     "check:violet-pricing-all": "node scripts/check-violet-pricing-all.mjs",
     "check:violet-ru-pricing": "node scripts/check-violet-ru-pricing.mjs",
     "max:set-webhook": "node scripts/set-max-webhook.mjs",
-    "start": "STATIC_DIR=examples/react/dist node examples/backend-node/server.mjs",
+    "start": "NODE_EXTRA_CA_CERTS=certs/russian-trusted-ca.pem STATIC_DIR=examples/react/dist node examples/backend-node/server.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

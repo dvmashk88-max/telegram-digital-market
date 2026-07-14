@@ -92,7 +92,7 @@ const VIOLET_PRODUCT_MATCHERS = [
 
 const USD_TO_RUB = 90;
 const MARKUP_PERCENT = 50;
-const ALFA_REGISTER_TIMEOUT_MS = 10_000;
+const ALFA_REQUEST_TIMEOUT_MS = 10_000;
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -502,7 +502,26 @@ async function registerAlfaOrder({ orderNumber, amount, description }) {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
-    signal: AbortSignal.timeout(ALFA_REGISTER_TIMEOUT_MS),
+    signal: AbortSignal.timeout(ALFA_REQUEST_TIMEOUT_MS),
+  });
+  return response.json();
+}
+
+async function fetchAlfaOrderStatus(orderId) {
+  const params = new URLSearchParams({
+    userName: ALFA_USERNAME,
+    password: ALFA_PASSWORD,
+    orderId,
+  });
+
+  const response = await fetch(`${ALFA_API_BASE.replace(/\/$/, '')}/getOrderStatus.do`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+    signal: AbortSignal.timeout(ALFA_REQUEST_TIMEOUT_MS),
   });
   return response.json();
 }
@@ -651,6 +670,44 @@ app.post('/api/payment/register', express.json({ limit: '16kb' }), async (req, r
       ok: true,
       orderId: payload.orderId,
       formUrl: payload.formUrl,
+    });
+  } catch (_error) {
+    return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });
+  }
+});
+
+app.post('/api/payment/status', express.json({ limit: '16kb' }), async (req, res) => {
+  const { orderId } = req.body ?? {};
+
+  if (typeof orderId !== 'string' || orderId.trim() === '' || orderId.length > 36) {
+    return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+  }
+
+  if (!ALFA_API_BASE || !ALFA_USERNAME || !ALFA_PASSWORD) {
+    return res.status(500).json({ error: 'ALFA_CONFIG_MISSING' });
+  }
+
+  const trimmedOrderId = orderId.trim();
+
+  try {
+    const payload = await fetchAlfaOrderStatus(trimmedOrderId);
+    const errorCode = payload?.ErrorCode;
+
+    if (errorCode !== undefined && String(errorCode) !== '0') {
+      return res.status(502).json({
+        error: 'ALFA_STATUS_FAILED',
+        errorCode: String(errorCode),
+        errorMessage: payload.ErrorMessage ?? '',
+      });
+    }
+
+    return res.json({
+      ok: true,
+      orderId: trimmedOrderId,
+      orderNumber: payload?.OrderNumber,
+      orderStatus: payload?.OrderStatus,
+      amount: payload?.Amount,
+      currency: payload?.currency,
     });
   } catch (_error) {
     return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });

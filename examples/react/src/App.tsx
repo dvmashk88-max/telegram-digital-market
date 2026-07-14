@@ -63,10 +63,27 @@ interface VioletCatalogOffer {
   priceRub?: number;
 }
 
+interface RegisteredOrder {
+  id: string;
+  orderNumber: string;
+  alfaOrderId: string;
+  categoryId: string;
+  cardId: string;
+  quantity: number;
+  amount: number;
+  currency: string;
+  paymentStatus: string;
+  supplierStatus: string;
+}
+
 const VIOLET_CATALOG_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/fazercards/violet-catalog'
     : `${window.location.origin}/api/fazercards/violet-catalog`;
+const ORDER_REGISTER_ENDPOINT =
+  window.location.hostname === 'localhost'
+    ? 'http://localhost:3351/api/orders/register'
+    : `${window.location.origin}/api/orders/register`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 
 const CATEGORIES: Category[] = [
@@ -378,6 +395,21 @@ function isOrderFieldFilled(field: OrderFieldKey, orderFields: OrderFields): boo
   return orderFields[field].trim().length > 0;
 }
 
+function getOrderRegisterErrorMessage(error: string | undefined): string {
+  const messages: Record<string, string> = {
+    INVALID_CATEGORY_ID: 'Неверно выбран товар',
+    INVALID_CARD_ID: 'Неверно выбран товар',
+    OFFER_NOT_FOUND: 'Товар больше недоступен',
+    INSUFFICIENT_STOCK: 'Товар закончился',
+    INVALID_SUPPLIER_PRICE: 'Не удалось рассчитать цену',
+    ORDER_CONFIG_MISSING: 'Оплата временно недоступна',
+    ORDER_STORAGE_FAILED: 'Не удалось создать заказ',
+    ALFA_REGISTER_FAILED: 'Банк отклонил создание платежа',
+    ALFA_REQUEST_FAILED: 'Не удалось связаться с банком',
+  };
+  return error ? messages[error] ?? 'Не удалось создать платёж' : 'Не удалось создать платёж';
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function App() {
@@ -390,6 +422,11 @@ export function App() {
   const [violetCatalog, setVioletCatalog] = useState<Record<string, VioletCatalogItem>>({});
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [orderRegistering, setOrderRegistering] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
+  const [registeredOrder, setRegisteredOrder] = useState<RegisteredOrder | null>(null);
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [showPaymentFallback, setShowPaymentFallback] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -468,6 +505,10 @@ export function App() {
     setShowAllDenominations(false);
     setOrderFields(EMPTY_ORDER_FIELDS);
     setOrderStatus('idle');
+    setOrderError(null);
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
   }
 
   function selectProduct(product: Product) {
@@ -478,16 +519,83 @@ export function App() {
     setShowAllDenominations(false);
     setOrderFields(EMPTY_ORDER_FIELDS);
     setOrderStatus('idle');
+    setOrderError(null);
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
   }
 
   function updateOrderField(field: OrderFieldKey, value: string) {
     setOrderFields((prev) => ({ ...prev, [field]: value }));
     setOrderStatus('idle');
+    setOrderError(null);
   }
 
   function previewOrder() {
     if (!canContinue) return;
     setOrderStatus('preview');
+  }
+
+  async function registerGiftCardOrder() {
+    if (!canContinue || orderRegistering) return;
+
+    const categoryId = selectedProductMeta?.categoryId;
+    const cardId = selectedOffer?.cardId;
+
+    setOrderError(null);
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
+
+    if (!categoryId || !cardId) {
+      setOrderError('Не удалось определить выбранный товар');
+      return;
+    }
+
+    setOrderRegistering(true);
+
+    try {
+      const response = await fetch(ORDER_REGISTER_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          categoryId,
+          cardId,
+          quantity: 1,
+        }),
+      });
+      const payload = await response.json() as {
+        ok?: boolean;
+        order?: RegisteredOrder;
+        formUrl?: string;
+        error?: string;
+      };
+
+      if (!response.ok || payload.ok !== true || !payload.order || !payload.formUrl) {
+        setOrderError(getOrderRegisterErrorMessage(payload.error));
+        return;
+      }
+
+      setRegisteredOrder(payload.order);
+      setPaymentUrl(payload.formUrl);
+      setOrderStatus('idle');
+
+      const opened = window.open(payload.formUrl, '_blank', 'noopener,noreferrer');
+      if (!opened) setShowPaymentFallback(true);
+    } catch (_error) {
+      setOrderError('Не удалось создать платёж');
+    } finally {
+      setOrderRegistering(false);
+    }
+  }
+
+  function continueOrder() {
+    if (selectedOrderFlow === 'code_delivery') {
+      void registerGiftCardOrder();
+      return;
+    }
+
+    previewOrder();
   }
 
   useEffect(() => {
@@ -501,12 +609,20 @@ export function App() {
     setShowAllDenominations(false);
     setOrderFields(EMPTY_ORDER_FIELDS);
     setOrderStatus('idle');
+    setOrderError(null);
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
   }, [selectedProductId, violetCatalog, visibleProducts]);
 
   useEffect(() => {
     if (displayableSelectedProductOffers.some((offer) => isSameOffer(selectedOffer, offer))) return;
     setSelectedOffer(getDefaultOffer(selectedProduct, displayableSelectedProductOffers));
     setOrderStatus('idle');
+    setOrderError(null);
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
   }, [displayableSelectedProductOffers, selectedOffer, selectedProduct]);
 
   return (
@@ -609,6 +725,10 @@ export function App() {
                   onClick={() => {
                     setSelectedOffer(offer);
                     setOrderStatus('idle');
+                    setOrderError(null);
+                    setRegisteredOrder(null);
+                    setPaymentUrl(null);
+                    setShowPaymentFallback(false);
                   }}
                 >
                   <span>{formatOfferNominal(offer, selectedProduct)}</span>
@@ -724,9 +844,38 @@ export function App() {
             </span>
           </div>
 
-          <button className="btn -accent" type="button" disabled={!canContinue} onClick={previewOrder}>
-            Продолжить
+          <button
+            className="btn -accent"
+            type="button"
+            disabled={!canContinue || orderRegistering}
+            onClick={continueOrder}
+          >
+            {orderRegistering ? 'Создаём заказ…' : 'Продолжить'}
           </button>
+
+          {orderError && (
+            <div className="success-note -error">
+              <strong>{orderError}</strong>
+            </div>
+          )}
+
+          {registeredOrder && (
+            <div className="success-note">
+              <strong>Заказ создан</strong>
+              <span>Номер заказа: {registeredOrder.orderNumber}</span>
+              <span>Сумма: {formatRub(registeredOrder.amount / 100)}</span>
+              <span>Статус: Ожидает оплаты</span>
+              {showPaymentFallback && paymentUrl && (
+                <button
+                  className="btn -accent"
+                  type="button"
+                  onClick={() => window.open(paymentUrl, '_blank', 'noopener,noreferrer')}
+                >
+                  Перейти к оплате
+                </button>
+              )}
+            </div>
+          )}
 
           {orderStatus === 'preview' && (
             <div className="success-note">

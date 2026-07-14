@@ -93,6 +93,7 @@ const VIOLET_PRODUCT_MATCHERS = [
 const USD_TO_RUB = 90;
 const MARKUP_PERCENT = 50;
 const ALFA_REQUEST_TIMEOUT_MS = 10_000;
+const FAZER_REQUEST_TIMEOUT_MS = 10_000;
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -526,6 +527,36 @@ async function fetchAlfaOrderStatus(orderId) {
   return response.json();
 }
 
+async function createFazerGiftcardOrder({
+  categoryId,
+  cardId,
+  quantity,
+  idempotencyKey,
+}) {
+  const response = await fetch(`${FAZERCARDS_API_BASE.replace(/\/$/, '')}/api/v2/giftcards/order`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-API-Key': FAZERCARDS_API_KEY,
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({
+      category_id: categoryId,
+      card_id: cardId,
+      quantity,
+    }),
+    signal: AbortSignal.timeout(FAZER_REQUEST_TIMEOUT_MS),
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : null;
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload,
+  };
+}
+
 const app = express();
 
 // CORS for the mini-app served from a different origin.
@@ -629,6 +660,84 @@ app.get('/api/fazercards/violet-catalog', async (_req, res) => {
   } catch (error) {
     console.error('[fazercards] violet catalog upstream error', error);
     res.status(502).json({ error: 'FAZERCARDS_VIOLET_CATALOG_FAILURE' });
+  }
+});
+
+app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), async (req, res) => {
+  const { alfaOrderId, categoryId, cardId, quantity } = req.body ?? {};
+
+  if (typeof alfaOrderId !== 'string' || alfaOrderId.trim() === '' || alfaOrderId.length > 36) {
+    return res.status(400).json({ error: 'INVALID_ALFA_ORDER_ID' });
+  }
+
+  if (typeof categoryId !== 'string' || categoryId.trim() === '' || categoryId.length > 255) {
+    return res.status(400).json({ error: 'INVALID_CATEGORY_ID' });
+  }
+
+  if (typeof cardId !== 'string' || cardId.trim() === '' || cardId.length > 255) {
+    return res.status(400).json({ error: 'INVALID_CARD_ID' });
+  }
+
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) {
+    return res.status(400).json({ error: 'INVALID_QUANTITY' });
+  }
+
+  if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY || !ALFA_API_BASE || !ALFA_USERNAME || !ALFA_PASSWORD) {
+    return res.status(500).json({ error: 'PAYMENT_CONFIG_MISSING' });
+  }
+
+  const trimmedAlfaOrderId = alfaOrderId.trim();
+  const trimmedCategoryId = categoryId.trim();
+  const trimmedCardId = cardId.trim();
+
+  try {
+    const alfaPayload = await fetchAlfaOrderStatus(trimmedAlfaOrderId);
+    const alfaErrorCode = alfaPayload?.ErrorCode;
+
+    if (alfaErrorCode !== undefined && String(alfaErrorCode) !== '0') {
+      return res.status(502).json({
+        error: 'ALFA_STATUS_FAILED',
+        errorCode: String(alfaErrorCode),
+        errorMessage: alfaPayload.ErrorMessage ?? '',
+      });
+    }
+
+    if (alfaPayload?.OrderStatus !== 2) {
+      return res.status(409).json({
+        error: 'PAYMENT_NOT_CONFIRMED',
+        orderStatus: alfaPayload?.OrderStatus,
+      });
+    }
+
+    if (process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true') {
+      return res.status(503).json({ error: 'FAZER_ORDERING_DISABLED' });
+    }
+
+    const fazerResult = await createFazerGiftcardOrder({
+      categoryId: trimmedCategoryId,
+      cardId: trimmedCardId,
+      quantity,
+      idempotencyKey: `max-digital-market:${trimmedAlfaOrderId}`,
+    });
+
+    if (!fazerResult.ok || fazerResult.payload?.ok !== true) {
+      return res.status(502).json({
+        error: 'FAZER_ORDER_FAILED',
+        details: {
+          status: fazerResult.status,
+          error: fazerResult.payload?.error,
+          code: fazerResult.payload?.code,
+        },
+      });
+    }
+
+    return res.json({
+      ok: true,
+      alfaOrderId: trimmedAlfaOrderId,
+      fazerOrder: fazerResult.payload.order,
+    });
+  } catch (_error) {
+    return res.status(502).json({ error: 'FAZER_ORDER_FAILED' });
   }
 });
 

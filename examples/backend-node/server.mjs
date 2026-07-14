@@ -92,6 +92,7 @@ const VIOLET_PRODUCT_MATCHERS = [
 
 const USD_TO_RUB = 90;
 const MARKUP_PERCENT = 50;
+const ALFA_REGISTER_TIMEOUT_MS = 10_000;
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -482,6 +483,30 @@ function normalizeTelegramPremium(payload) {
   };
 }
 
+async function registerAlfaOrder({ orderNumber, amount, description }) {
+  const params = new URLSearchParams({
+    userName: ALFA_USERNAME,
+    password: ALFA_PASSWORD,
+    orderNumber,
+    amount: String(amount),
+    returnUrl: ALFA_RETURN_URL,
+  });
+  if (description !== undefined && description !== null && description !== '') {
+    params.set('description', String(description));
+  }
+
+  const response = await fetch(`${ALFA_API_BASE.replace(/\/$/, '')}/register.do`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+    signal: AbortSignal.timeout(ALFA_REGISTER_TIMEOUT_MS),
+  });
+  return response.json();
+}
+
 const app = express();
 
 // CORS for the mini-app served from a different origin.
@@ -585,6 +610,50 @@ app.get('/api/fazercards/violet-catalog', async (_req, res) => {
   } catch (error) {
     console.error('[fazercards] violet catalog upstream error', error);
     res.status(502).json({ error: 'FAZERCARDS_VIOLET_CATALOG_FAILURE' });
+  }
+});
+
+app.post('/api/payment/register', express.json({ limit: '16kb' }), async (req, res) => {
+  const { orderNumber, amount, description } = req.body ?? {};
+
+  if (typeof orderNumber !== 'string' || orderNumber.trim() === '' || orderNumber.length > 36) {
+    return res.status(400).json({ error: 'INVALID_ORDER_NUMBER' });
+  }
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'INVALID_AMOUNT' });
+  }
+
+  if (!ALFA_API_BASE || !ALFA_USERNAME || !ALFA_PASSWORD || !ALFA_RETURN_URL) {
+    return res.status(500).json({ error: 'ALFA_CONFIG_MISSING' });
+  }
+
+  try {
+    const payload = await registerAlfaOrder({
+      orderNumber: orderNumber.trim(),
+      amount,
+      description,
+    });
+
+    if (payload?.errorCode) {
+      return res.status(502).json({
+        error: 'ALFA_REGISTER_FAILED',
+        errorCode: String(payload.errorCode),
+        errorMessage: payload.errorMessage ?? '',
+      });
+    }
+
+    if (!payload?.orderId || !payload?.formUrl) {
+      return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });
+    }
+
+    return res.json({
+      ok: true,
+      orderId: payload.orderId,
+      formUrl: payload.formUrl,
+    });
+  } catch (_error) {
+    return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });
   }
 });
 

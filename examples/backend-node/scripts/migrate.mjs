@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,12 +10,22 @@ if (!isDatabaseConfigured()) {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationPath = join(__dirname, '..', 'migrations', '001_create_orders.sql');
+const migrationsDir = join(__dirname, '..', 'migrations');
 
 try {
-  const sql = await readFile(migrationPath, 'utf8');
-  await query(sql);
-  console.log('Migration completed: 001_create_orders.sql');
+  const migrationFiles = (await readdir(migrationsDir))
+    .filter((fileName) => fileName.endsWith('.sql'))
+    .sort();
+
+  for (const fileName of migrationFiles) {
+    try {
+      const sql = await readFile(join(migrationsDir, fileName), 'utf8');
+      await query(sql);
+      console.log(`Migration completed: ${fileName}`);
+    } catch (error) {
+      throw new Error(`${fileName}: ${error.message}`);
+    }
+  }
 } catch (error) {
   console.error(`Migration failed: ${error.message}`);
   process.exitCode = 1;

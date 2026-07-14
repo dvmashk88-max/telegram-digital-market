@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,7 @@ import {
   handleMaxWebhookPayload,
   MAX_WEBHOOK_URL,
 } from './max-bot.mjs';
+import { isDatabaseConfigured, query } from './db.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR_CANDIDATES = [
@@ -94,6 +96,7 @@ const USD_TO_RUB = 90;
 const MARKUP_PERCENT = 50;
 const ALFA_REQUEST_TIMEOUT_MS = 10_000;
 const FAZER_REQUEST_TIMEOUT_MS = 10_000;
+const ORDER_CURRENCY = '810';
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -315,6 +318,32 @@ async function fetchGiftCardOffers(categoryId) {
     .map((offer) => normalizePricedOffer(categoryId, offer, { expectedCurrency }))
     .filter(Boolean)
     .sort((a, b) => a.nominal - b.nominal);
+}
+
+async function findConfirmedGiftcardOffer({ categoryId, cardId, quantity }) {
+  const payload = await fetchFazerCardsJson('/api/v2/giftcards/cards', { category_id: categoryId });
+  const offers = Array.isArray(payload.offers) ? payload.offers : [];
+  const offer = offers.find((item) => (item.card_id ?? item.id) === cardId);
+
+  if (!offer) {
+    return { status: 'not_found' };
+  }
+
+  const stock = Number(offer.stock);
+  if (Number.isFinite(stock) && stock < quantity) {
+    return { status: 'insufficient_stock' };
+  }
+
+  const purchasePriceUsd = Number(offer.price_usd);
+  if (!Number.isFinite(purchasePriceUsd) || purchasePriceUsd <= 0) {
+    return { status: 'invalid_price' };
+  }
+
+  return {
+    status: 'ok',
+    offer,
+    purchasePriceUsd,
+  };
 }
 
 function mapFazerCardsRequiredField(field) {
@@ -557,6 +586,103 @@ async function createFazerGiftcardOrder({
   };
 }
 
+function generateOrderNumber() {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/\D/g, '')
+    .slice(0, 14);
+  const suffix = randomBytes(3).toString('hex').toUpperCase();
+  return `MAX-${timestamp}-${suffix}`;
+}
+
+function formatOrder(row, options = {}) {
+  const order = {
+    id: row.id,
+    orderNumber: row.order_number,
+    alfaOrderId: row.alfa_order_id,
+    categoryId: row.category_id,
+    cardId: row.card_id,
+    quantity: row.quantity,
+    amount: row.amount,
+    currency: row.currency,
+    paymentStatus: row.payment_status,
+    supplierStatus: row.supplier_status,
+  };
+
+  if (options.includeSupplierOrderId) {
+    order.supplierOrderId = row.supplier_order_id;
+  }
+
+  if (options.includeTimestamps) {
+    order.createdAt = row.created_at;
+    order.updatedAt = row.updated_at;
+  }
+
+  return order;
+}
+
+async function createStoredOrder({
+  maxUserId,
+  categoryId,
+  cardId,
+  quantity,
+  amount,
+}) {
+  let lastError;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const orderNumber = generateOrderNumber();
+    const idempotencyKey = `max-digital-market:${orderNumber}`;
+
+    try {
+      const result = await query(
+        `INSERT INTO orders (
+          order_number,
+          max_user_id,
+          category_id,
+          card_id,
+          quantity,
+          amount,
+          currency,
+          payment_status,
+          supplier_status,
+          idempotency_key
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'created', 'not_started', $8)
+        RETURNING *`,
+        [
+          orderNumber,
+          maxUserId,
+          categoryId,
+          cardId,
+          quantity,
+          amount,
+          ORDER_CURRENCY,
+          idempotencyKey,
+        ],
+      );
+
+      return result.rows[0];
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== '23505') {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+async function markOrderPaymentFailed(orderId) {
+  await query(
+    `UPDATE orders
+      SET payment_status = 'failed',
+          updated_at = now()
+      WHERE id = $1`,
+    [orderId],
+  );
+}
+
 const app = express();
 
 // CORS for the mini-app served from a different origin.
@@ -738,6 +864,187 @@ app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), asy
     });
   } catch (_error) {
     return res.status(502).json({ error: 'FAZER_ORDER_FAILED' });
+  }
+});
+
+app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, res) => {
+  const { maxUserId, categoryId, cardId, quantity } = req.body ?? {};
+
+  if (maxUserId !== undefined && (typeof maxUserId !== 'string' || maxUserId.trim().length > 255)) {
+    return res.status(400).json({ error: 'INVALID_MAX_USER_ID' });
+  }
+
+  if (typeof categoryId !== 'string' || categoryId.trim() === '' || categoryId.length > 255) {
+    return res.status(400).json({ error: 'INVALID_CATEGORY_ID' });
+  }
+
+  if (typeof cardId !== 'string' || cardId.trim() === '' || cardId.length > 255) {
+    return res.status(400).json({ error: 'INVALID_CARD_ID' });
+  }
+
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) {
+    return res.status(400).json({ error: 'INVALID_QUANTITY' });
+  }
+
+  if (
+    !isDatabaseConfigured()
+    || !FAZERCARDS_API_BASE
+    || !FAZERCARDS_API_KEY
+    || !ALFA_API_BASE
+    || !ALFA_USERNAME
+    || !ALFA_PASSWORD
+    || !ALFA_RETURN_URL
+  ) {
+    return res.status(500).json({ error: 'ORDER_CONFIG_MISSING' });
+  }
+
+  const trimmedMaxUserId = maxUserId?.trim() || null;
+  const trimmedCategoryId = categoryId.trim();
+  const trimmedCardId = cardId.trim();
+
+  let storedOrder;
+
+  try {
+    const confirmedOffer = await findConfirmedGiftcardOffer({
+      categoryId: trimmedCategoryId,
+      cardId: trimmedCardId,
+      quantity,
+    });
+
+    if (confirmedOffer.status === 'not_found') {
+      return res.status(404).json({ error: 'OFFER_NOT_FOUND' });
+    }
+
+    if (confirmedOffer.status === 'insufficient_stock') {
+      return res.status(409).json({ error: 'INSUFFICIENT_STOCK' });
+    }
+
+    if (confirmedOffer.status === 'invalid_price') {
+      return res.status(502).json({ error: 'INVALID_SUPPLIER_PRICE' });
+    }
+
+    const priceRub = calculateSalePriceFromPurchaseUsd(confirmedOffer.purchasePriceUsd).priceRub;
+    const amountKopecks = priceRub * quantity * 100;
+
+    storedOrder = await createStoredOrder({
+      maxUserId: trimmedMaxUserId,
+      categoryId: trimmedCategoryId,
+      cardId: trimmedCardId,
+      quantity,
+      amount: amountKopecks,
+    });
+  } catch (error) {
+    if (error?.message?.startsWith('FazerCards')) {
+      return res.status(502).json({ error: 'FAZERCARDS_UPSTREAM_FAILURE' });
+    }
+
+    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
+  }
+
+  let alfaPayload;
+
+  try {
+    alfaPayload = await registerAlfaOrder({
+      orderNumber: storedOrder.order_number,
+      amount: storedOrder.amount,
+      description: `MAX Digital Market order ${storedOrder.order_number}`,
+    });
+
+    const alfaErrorCode = alfaPayload?.errorCode;
+
+    if (alfaErrorCode !== undefined && String(alfaErrorCode) !== '0') {
+      await markOrderPaymentFailed(storedOrder.id);
+      return res.status(502).json({
+        error: 'ALFA_REGISTER_FAILED',
+        errorCode: String(alfaErrorCode),
+        errorMessage: alfaPayload.errorMessage ?? '',
+      });
+    }
+
+    if (!alfaPayload?.orderId || !alfaPayload?.formUrl) {
+      await markOrderPaymentFailed(storedOrder.id);
+      return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });
+    }
+
+  } catch (_error) {
+    try {
+      await markOrderPaymentFailed(storedOrder.id);
+    } catch (_dbError) {
+      return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
+    }
+
+    return res.status(502).json({ error: 'ALFA_REQUEST_FAILED' });
+  }
+
+  try {
+    const updateResult = await query(
+      `UPDATE orders
+        SET alfa_order_id = $2,
+            payment_status = 'registered',
+            updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [storedOrder.id, alfaPayload.orderId],
+    );
+
+    return res.json({
+      ok: true,
+      order: formatOrder(updateResult.rows[0]),
+      formUrl: alfaPayload.formUrl,
+    });
+  } catch (_error) {
+    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
+  }
+});
+
+app.get('/api/orders/:id', async (req, res) => {
+  const { id } = req.params;
+
+  if (
+    typeof id !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+  ) {
+    return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+  }
+
+  if (!isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'ORDER_CONFIG_MISSING' });
+  }
+
+  try {
+    const result = await query(
+      `SELECT
+        id,
+        order_number,
+        alfa_order_id,
+        category_id,
+        card_id,
+        quantity,
+        amount,
+        currency,
+        payment_status,
+        supplier_status,
+        supplier_order_id,
+        created_at,
+        updated_at
+      FROM orders
+      WHERE id = $1`,
+      [id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+    }
+
+    return res.json({
+      ok: true,
+      order: formatOrder(result.rows[0], {
+        includeSupplierOrderId: true,
+        includeTimestamps: true,
+      }),
+    });
+  } catch (_error) {
+    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
   }
 });
 

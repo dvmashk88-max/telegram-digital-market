@@ -4,6 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ALLOWED_ORIGIN,
+  ALFA_API_BASE,
+  ALFA_PASSWORD,
+  ALFA_RETURN_URL,
+  ALFA_USERNAME,
   FAZERCARDS_API_BASE,
   FAZERCARDS_API_KEY,
   PORT,
@@ -582,6 +586,14 @@ app.get('/api/fazercards/violet-catalog', async (_req, res) => {
     console.error('[fazercards] violet catalog upstream error', error);
     res.status(502).json({ error: 'FAZERCARDS_VIOLET_CATALOG_FAILURE' });
   }
+});
+
+app.get('/api/payment/success', (_req, res) => {
+  res.json({
+    ok: true,
+    status: 'PAYMENT_RETURN_RECEIVED',
+    message: 'Возврат с платежной страницы получен',
+  });
 });
 
 if (STATIC_DIR) {

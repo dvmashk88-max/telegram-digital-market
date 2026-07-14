@@ -11,6 +11,8 @@ export const ALFA_USERNAME = process.env.ALFA_USERNAME ?? '';
 export const ALFA_PASSWORD = process.env.ALFA_PASSWORD ?? '';
 export const ALFA_RETURN_URL = process.env.ALFA_RETURN_URL ?? '';
 
+export const DATABASE_URL = process.env.DATABASE_URL ?? '';
+
 export const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 export const STATIC_DIR = process.env.STATIC_DIR ?? '';
 

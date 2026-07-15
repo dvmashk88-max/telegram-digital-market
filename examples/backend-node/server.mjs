@@ -105,6 +105,7 @@ const ORDER_CURRENCY = '810';
 const FULFILLMENT_RECONCILE_INTERVAL_MS = 30_000;
 const FULFILLMENT_RECONCILE_BATCH_SIZE = 5;
 const SMTP_CONNECTION_TIMEOUT_MS = 15_000;
+const SMTP_DNS_TIMEOUT_MS = 10_000;
 const SMTP_GREETING_TIMEOUT_MS = 10_000;
 const SMTP_SOCKET_TIMEOUT_MS = 20_000;
 const SMTP_SEND_MAX_ATTEMPTS = 3;
@@ -222,6 +223,8 @@ function createSmtpTransport() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_PORT === 465,
+    name: 'max-bot-production-6049.up.railway.app',
+    dnsTimeout: SMTP_DNS_TIMEOUT_MS,
     connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
     greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
     socketTimeout: SMTP_SOCKET_TIMEOUT_MS,

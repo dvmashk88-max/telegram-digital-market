@@ -10,7 +10,7 @@
     "example": "examples"
   },
   "scripts": {
-    "build": "npm ci --prefix examples/react && npm run build --prefix examples/react",
+    "build": "npm ci --prefix examples/react --include=dev && npm run build --prefix examples/react",
     "check:violet-pricing-all": "node scripts/check-violet-pricing-all.mjs",
     "check:violet-ru-pricing": "node scripts/check-violet-ru-pricing.mjs",
     "db:migrate": "node examples/backend-node/scripts/migrate.mjs",

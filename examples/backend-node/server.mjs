@@ -888,6 +888,289 @@ async function processSupplierOrderPayload(orderId, payload) {
   };
 }
 
+async function fulfillOrderById(id) {
+  if (
+    !isDatabaseConfigured()
+    || !FAZERCARDS_API_BASE
+    || !FAZERCARDS_API_KEY
+    || !ALFA_API_BASE
+    || !ALFA_USERNAME
+    || !ALFA_PASSWORD
+  ) {
+    return {
+      responseStatus: 500,
+      body: { error: 'FULFILLMENT_CONFIG_MISSING' },
+    };
+  }
+
+  let order;
+
+  try {
+    order = await loadOrderForFulfillment(id);
+  } catch (_error) {
+    return {
+      responseStatus: 500,
+      body: { error: 'ORDER_STORAGE_FAILED' },
+    };
+  }
+
+  if (!order) {
+    return {
+      responseStatus: 404,
+      body: { error: 'ORDER_NOT_FOUND' },
+    };
+  }
+
+  if (order.supplier_status === 'delivered') {
+    return {
+      responseStatus: 200,
+      body: {
+        ok: true,
+        status: 'DELIVERED',
+        order: formatFulfillmentOrder(order),
+        codes: getSavedCodes(order),
+      },
+    };
+  }
+
+  if (order.supplier_status === 'ordering') {
+    return {
+      responseStatus: 409,
+      body: { error: 'FULFILLMENT_IN_PROGRESS' },
+    };
+  }
+
+  if (order.supplier_status === 'ordered') {
+    try {
+      const supplierResult = await fetchFazerOrder(order.supplier_order_id);
+      if (!supplierResult.ok || supplierResult.payload?.ok !== true) {
+        return {
+          responseStatus: 502,
+          body: {
+            error: 'FAZER_ORDER_FAILED',
+            details: safeFazerFailureDetails(supplierResult.payload),
+          },
+        };
+      }
+
+      return await processSupplierOrderPayload(order.id, supplierResult.payload);
+    } catch (_error) {
+      return {
+        responseStatus: 502,
+        body: {
+          error: 'FAZER_ORDER_FAILED',
+          details: {
+            code: 'SUPPLIER_STATUS_REQUEST_FAILED',
+            error: 'Unable to fetch supplier order status',
+          },
+        },
+      };
+    }
+  }
+
+  let alfaPayload;
+
+  try {
+    alfaPayload = await fetchAlfaOrderStatus(order.alfa_order_id);
+  } catch (_error) {
+    return {
+      responseStatus: 502,
+      body: { error: 'ALFA_STATUS_FAILED' },
+    };
+  }
+
+  const alfaErrorCode = alfaPayload?.ErrorCode;
+  if (alfaErrorCode !== undefined && String(alfaErrorCode) !== '0') {
+    return {
+      responseStatus: 502,
+      body: { error: 'ALFA_STATUS_FAILED' },
+    };
+  }
+
+  if (alfaPayload?.OrderStatus !== 2) {
+    return {
+      responseStatus: 409,
+      body: {
+        error: 'PAYMENT_NOT_CONFIRMED',
+        orderStatus: alfaPayload?.OrderStatus,
+      },
+    };
+  }
+
+  if (String(alfaPayload?.OrderNumber) !== order.order_number) {
+    return {
+      responseStatus: 409,
+      body: { error: 'PAYMENT_ORDER_MISMATCH' },
+    };
+  }
+
+  if (Number(alfaPayload?.Amount) !== Number(order.amount) || String(alfaPayload?.currency) !== String(order.currency)) {
+    return {
+      responseStatus: 409,
+      body: { error: 'PAYMENT_AMOUNT_MISMATCH' },
+    };
+  }
+
+  try {
+    await query(
+      `UPDATE orders
+        SET payment_status = 'paid',
+            updated_at = now()
+        WHERE id = $1`,
+      [order.id],
+    );
+  } catch (_error) {
+    return {
+      responseStatus: 500,
+      body: { error: 'ORDER_STORAGE_FAILED' },
+    };
+  }
+
+  let lockedOrderState;
+
+  try {
+    lockedOrderState = await withTransaction(async (client) => {
+      const lockedResult = await client.query(
+        `SELECT *
+          FROM orders
+          WHERE id = $1
+          FOR UPDATE`,
+        [order.id],
+      );
+      const row = lockedResult.rows[0];
+
+      if (!row) return null;
+      if (row.supplier_status !== 'not_started' && row.supplier_status !== 'failed') {
+        return {
+          order: row,
+          acquired: false,
+        };
+      }
+
+      const updateResult = await client.query(
+        `UPDATE orders
+          SET supplier_status = 'ordering',
+              updated_at = now()
+          WHERE id = $1
+          RETURNING *`,
+        [order.id],
+      );
+      return {
+        order: updateResult.rows[0],
+        acquired: true,
+      };
+    });
+  } catch (_error) {
+    return {
+      responseStatus: 500,
+      body: { error: 'ORDER_STORAGE_FAILED' },
+    };
+  }
+
+  if (!lockedOrderState) {
+    return {
+      responseStatus: 404,
+      body: { error: 'ORDER_NOT_FOUND' },
+    };
+  }
+
+  const lockedOrder = lockedOrderState.order;
+
+  if (lockedOrder.supplier_status === 'delivered') {
+    return {
+      responseStatus: 200,
+      body: {
+        ok: true,
+        status: 'DELIVERED',
+        order: formatFulfillmentOrder(lockedOrder),
+        codes: getSavedCodes(lockedOrder),
+      },
+    };
+  }
+
+  if (lockedOrder.supplier_status === 'ordering' && !lockedOrderState.acquired) {
+    return {
+      responseStatus: 409,
+      body: { error: 'FULFILLMENT_IN_PROGRESS' },
+    };
+  }
+
+  if (lockedOrder.supplier_status === 'ordered') {
+    return {
+      responseStatus: 202,
+      body: {
+        ok: true,
+        status: 'SUPPLIER_PENDING',
+        order: formatFulfillmentOrder(lockedOrder),
+      },
+    };
+  }
+
+  if (lockedOrder.supplier_status !== 'ordering') {
+    return {
+      responseStatus: 409,
+      body: { error: 'FULFILLMENT_IN_PROGRESS' },
+    };
+  }
+
+  if (
+    process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true'
+    || process.env.ALLOWED_FULFILLMENT_ORDER_ID !== order.id
+  ) {
+    await resetSupplierNotStarted(order.id);
+    return {
+      responseStatus: 503,
+      body: { error: 'FAZER_ORDERING_DISABLED' },
+    };
+  }
+
+  let fazerResult;
+
+  try {
+    fazerResult = await createFazerGiftcardOrder({
+      categoryId: lockedOrder.category_id,
+      cardId: lockedOrder.card_id,
+      quantity: lockedOrder.quantity,
+      idempotencyKey: lockedOrder.idempotency_key,
+    });
+  } catch (_error) {
+    await markSupplierFailed(order.id, {
+      code: 'SUPPLIER_REQUEST_FAILED',
+      error: 'Supplier request failed',
+    });
+    return {
+      responseStatus: 502,
+      body: {
+        error: 'FAZER_ORDER_FAILED',
+        details: {
+          code: 'SUPPLIER_REQUEST_FAILED',
+          error: 'Supplier request failed',
+        },
+      },
+    };
+  }
+
+  if (!fazerResult.ok || fazerResult.payload?.ok !== true) {
+    await markSupplierFailed(order.id, safeFazerFailureDetails(fazerResult.payload));
+    return {
+      responseStatus: 502,
+      body: {
+        error: 'FAZER_ORDER_FAILED',
+        details: safeFazerFailureDetails(fazerResult.payload),
+      },
+    };
+  }
+
+  try {
+    return await processSupplierOrderPayload(order.id, fazerResult.payload);
+  } catch (_error) {
+    return {
+      responseStatus: 500,
+      body: { error: 'ORDER_STORAGE_FAILED' },
+    };
+  }
+}
+
 const app = express();
 
 // CORS for the mini-app served from a different origin.
@@ -1209,219 +1492,8 @@ app.post('/api/orders/:id/fulfill', async (req, res) => {
     return res.status(400).json({ error: 'INVALID_ORDER_ID' });
   }
 
-  if (
-    !isDatabaseConfigured()
-    || !FAZERCARDS_API_BASE
-    || !FAZERCARDS_API_KEY
-    || !ALFA_API_BASE
-    || !ALFA_USERNAME
-    || !ALFA_PASSWORD
-  ) {
-    return res.status(500).json({ error: 'FULFILLMENT_CONFIG_MISSING' });
-  }
-
-  let order;
-
-  try {
-    order = await loadOrderForFulfillment(id);
-  } catch (_error) {
-    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
-  }
-
-  if (!order) {
-    return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
-  }
-
-  if (order.supplier_status === 'delivered') {
-    return res.json({
-      ok: true,
-      status: 'DELIVERED',
-      order: formatFulfillmentOrder(order),
-      codes: getSavedCodes(order),
-    });
-  }
-
-  if (order.supplier_status === 'ordering') {
-    return res.status(409).json({ error: 'FULFILLMENT_IN_PROGRESS' });
-  }
-
-  if (order.supplier_status === 'ordered') {
-    try {
-      const supplierResult = await fetchFazerOrder(order.supplier_order_id);
-      if (!supplierResult.ok || supplierResult.payload?.ok !== true) {
-        return res.status(502).json({
-          error: 'FAZER_ORDER_FAILED',
-          details: safeFazerFailureDetails(supplierResult.payload),
-        });
-      }
-
-      const processed = await processSupplierOrderPayload(order.id, supplierResult.payload);
-      return res.status(processed.responseStatus).json(processed.body);
-    } catch (_error) {
-      return res.status(502).json({
-        error: 'FAZER_ORDER_FAILED',
-        details: {
-          code: 'SUPPLIER_STATUS_REQUEST_FAILED',
-          error: 'Unable to fetch supplier order status',
-        },
-      });
-    }
-  }
-
-  let alfaPayload;
-
-  try {
-    alfaPayload = await fetchAlfaOrderStatus(order.alfa_order_id);
-  } catch (_error) {
-    return res.status(502).json({ error: 'ALFA_STATUS_FAILED' });
-  }
-
-  const alfaErrorCode = alfaPayload?.ErrorCode;
-  if (alfaErrorCode !== undefined && String(alfaErrorCode) !== '0') {
-    return res.status(502).json({ error: 'ALFA_STATUS_FAILED' });
-  }
-
-  if (alfaPayload?.OrderStatus !== 2) {
-    return res.status(409).json({
-      error: 'PAYMENT_NOT_CONFIRMED',
-      orderStatus: alfaPayload?.OrderStatus,
-    });
-  }
-
-  if (String(alfaPayload?.OrderNumber) !== order.order_number) {
-    return res.status(409).json({ error: 'PAYMENT_ORDER_MISMATCH' });
-  }
-
-  if (Number(alfaPayload?.Amount) !== Number(order.amount) || String(alfaPayload?.currency) !== String(order.currency)) {
-    return res.status(409).json({ error: 'PAYMENT_AMOUNT_MISMATCH' });
-  }
-
-  try {
-    await query(
-      `UPDATE orders
-        SET payment_status = 'paid',
-            updated_at = now()
-        WHERE id = $1`,
-      [order.id],
-    );
-  } catch (_error) {
-    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
-  }
-
-  let lockedOrderState;
-
-  try {
-    lockedOrderState = await withTransaction(async (client) => {
-      const lockedResult = await client.query(
-        `SELECT *
-          FROM orders
-          WHERE id = $1
-          FOR UPDATE`,
-        [order.id],
-      );
-      const row = lockedResult.rows[0];
-
-      if (!row) return null;
-      if (row.supplier_status !== 'not_started' && row.supplier_status !== 'failed') {
-        return {
-          order: row,
-          acquired: false,
-        };
-      }
-
-      const updateResult = await client.query(
-        `UPDATE orders
-          SET supplier_status = 'ordering',
-              updated_at = now()
-          WHERE id = $1
-          RETURNING *`,
-        [order.id],
-      );
-      return {
-        order: updateResult.rows[0],
-        acquired: true,
-      };
-    });
-  } catch (_error) {
-    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
-  }
-
-  if (!lockedOrderState) {
-    return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
-  }
-
-  const lockedOrder = lockedOrderState.order;
-
-  if (lockedOrder.supplier_status === 'delivered') {
-    return res.json({
-      ok: true,
-      status: 'DELIVERED',
-      order: formatFulfillmentOrder(lockedOrder),
-      codes: getSavedCodes(lockedOrder),
-    });
-  }
-
-  if (lockedOrder.supplier_status === 'ordering' && !lockedOrderState.acquired) {
-    return res.status(409).json({ error: 'FULFILLMENT_IN_PROGRESS' });
-  }
-
-  if (lockedOrder.supplier_status === 'ordered') {
-    return res.status(202).json({
-      ok: true,
-      status: 'SUPPLIER_PENDING',
-      order: formatFulfillmentOrder(lockedOrder),
-    });
-  }
-
-  if (lockedOrder.supplier_status !== 'ordering') {
-    return res.status(409).json({ error: 'FULFILLMENT_IN_PROGRESS' });
-  }
-
-  if (
-    process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true'
-    || process.env.ALLOWED_FULFILLMENT_ORDER_ID !== order.id
-  ) {
-    await resetSupplierNotStarted(order.id);
-    return res.status(503).json({ error: 'FAZER_ORDERING_DISABLED' });
-  }
-
-  let fazerResult;
-
-  try {
-    fazerResult = await createFazerGiftcardOrder({
-      categoryId: lockedOrder.category_id,
-      cardId: lockedOrder.card_id,
-      quantity: lockedOrder.quantity,
-      idempotencyKey: lockedOrder.idempotency_key,
-    });
-  } catch (_error) {
-    await markSupplierFailed(order.id, {
-      code: 'SUPPLIER_REQUEST_FAILED',
-      error: 'Supplier request failed',
-    });
-    return res.status(502).json({
-      error: 'FAZER_ORDER_FAILED',
-      details: {
-        code: 'SUPPLIER_REQUEST_FAILED',
-        error: 'Supplier request failed',
-      },
-    });
-  }
-
-  if (!fazerResult.ok || fazerResult.payload?.ok !== true) {
-    await markSupplierFailed(order.id, safeFazerFailureDetails(fazerResult.payload));
-    return res.status(502).json({
-      error: 'FAZER_ORDER_FAILED',
-      details: safeFazerFailureDetails(fazerResult.payload),
-    });
-  }
-
-  try {
-    const processed = await processSupplierOrderPayload(order.id, fazerResult.payload);
-    return res.status(processed.responseStatus).json(processed.body);
-  } catch (_error) {
-    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
-  }
+  const processed = await fulfillOrderById(id);
+  return res.status(processed.responseStatus).json(processed.body);
 });
 
 app.get('/api/orders/:id/result', async (req, res) => {
@@ -1435,32 +1507,8 @@ app.get('/api/orders/:id/result', async (req, res) => {
     return res.status(400).json({ error: 'INVALID_ORDER_ID' });
   }
 
-  if (!isDatabaseConfigured()) {
-    return res.status(500).json({ error: 'FULFILLMENT_CONFIG_MISSING' });
-  }
-
-  let order;
-
-  try {
-    order = await loadOrderForFulfillment(id);
-  } catch (_error) {
-    return res.status(500).json({ error: 'ORDER_STORAGE_FAILED' });
-  }
-
-  if (!order) {
-    return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
-  }
-
-  if (order.supplier_status !== 'delivered') {
-    return res.status(409).json({ error: 'ORDER_NOT_DELIVERED' });
-  }
-
-  return res.json({
-    ok: true,
-    status: 'DELIVERED',
-    order: formatFulfillmentOrder(order),
-    codes: getSavedCodes(order),
-  });
+  const processed = await fulfillOrderById(id);
+  return res.status(processed.responseStatus).json(processed.body);
 });
 
 app.get('/api/orders/:id', async (req, res) => {

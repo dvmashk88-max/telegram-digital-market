@@ -76,6 +76,8 @@ interface RegisteredOrder {
   supplierStatus: string;
 }
 
+type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'error';
+
 const VIOLET_CATALOG_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/fazercards/violet-catalog'
@@ -84,6 +86,10 @@ const ORDER_REGISTER_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/orders/register'
     : `${window.location.origin}/api/orders/register`;
+const ORDER_RESULT_ENDPOINT =
+  window.location.hostname === 'localhost'
+    ? 'http://localhost:3351/api/orders'
+    : `${window.location.origin}/api/orders`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 
 const CATEGORIES: Category[] = [
@@ -427,6 +433,9 @@ export function App() {
   const [registeredOrder, setRegisteredOrder] = useState<RegisteredOrder | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [showPaymentFallback, setShowPaymentFallback] = useState(false);
+  const [fulfillmentState, setFulfillmentState] = useState<FulfillmentState>('idle');
+  const [fulfillmentMessage, setFulfillmentMessage] = useState<string | null>(null);
+  const [digitalCodes, setDigitalCodes] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,6 +503,16 @@ export function App() {
     selectedProduct !== null &&
     clientPriceRub !== null &&
     requiredOrderFields.every((field) => isOrderFieldFilled(field, orderFields));
+
+  function resetCheckoutState() {
+    setRegisteredOrder(null);
+    setPaymentUrl(null);
+    setShowPaymentFallback(false);
+    setFulfillmentState('idle');
+    setFulfillmentMessage(null);
+    setDigitalCodes([]);
+  }
+
   function selectCategory(categoryId: CategoryId) {
     const firstProduct = PRODUCTS.find((product) => product.category === categoryId);
     if (!firstProduct) return;
@@ -506,9 +525,7 @@ export function App() {
     setOrderFields(EMPTY_ORDER_FIELDS);
     setOrderStatus('idle');
     setOrderError(null);
-    setRegisteredOrder(null);
-    setPaymentUrl(null);
-    setShowPaymentFallback(false);
+    resetCheckoutState();
   }
 
   function selectProduct(product: Product) {
@@ -520,15 +537,14 @@ export function App() {
     setOrderFields(EMPTY_ORDER_FIELDS);
     setOrderStatus('idle');
     setOrderError(null);
-    setRegisteredOrder(null);
-    setPaymentUrl(null);
-    setShowPaymentFallback(false);
+    resetCheckoutState();
   }
 
   function updateOrderField(field: OrderFieldKey, value: string) {
     setOrderFields((prev) => ({ ...prev, [field]: value }));
     setOrderStatus('idle');
     setOrderError(null);
+    resetCheckoutState();
   }
 
   function previewOrder() {
@@ -543,9 +559,7 @@ export function App() {
     const cardId = selectedOffer?.cardId;
 
     setOrderError(null);
-    setRegisteredOrder(null);
-    setPaymentUrl(null);
-    setShowPaymentFallback(false);
+    resetCheckoutState();
 
     if (!categoryId || !cardId) {
       setOrderError('Не удалось определить выбранный товар');
@@ -578,6 +592,8 @@ export function App() {
 
       setRegisteredOrder(payload.order);
       setPaymentUrl(payload.formUrl);
+      setFulfillmentState('waiting_payment');
+      setFulfillmentMessage('После оплаты код появится здесь автоматически.');
       setOrderStatus('idle');
 
       const opened = window.open(payload.formUrl, '_blank', 'noopener,noreferrer');
@@ -599,6 +615,71 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!registeredOrder || digitalCodes.length > 0) return undefined;
+
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    async function checkResult() {
+      try {
+        const response = await fetch(`${ORDER_RESULT_ENDPOINT}/${registeredOrder.id}/result`, {
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await response.json() as {
+          ok?: boolean;
+          status?: string;
+          codes?: string[];
+          error?: string;
+          orderStatus?: number;
+        };
+
+        if (cancelled) return;
+
+        if (response.ok && payload.ok === true && payload.status === 'DELIVERED' && Array.isArray(payload.codes)) {
+          setDigitalCodes(payload.codes);
+          setFulfillmentState('delivered');
+          setFulfillmentMessage('Код готов.');
+          return;
+        }
+
+        if (payload.error === 'PAYMENT_NOT_CONFIRMED') {
+          setFulfillmentState('waiting_payment');
+          setFulfillmentMessage('Ожидаем оплату. После оплаты код появится здесь автоматически.');
+        } else if (
+          payload.status === 'SUPPLIER_PENDING'
+          || payload.error === 'FULFILLMENT_IN_PROGRESS'
+          || payload.error === 'ORDER_NOT_DELIVERED'
+        ) {
+          setFulfillmentState('processing');
+          setFulfillmentMessage('Оплата получена. Готовим цифровой код.');
+        } else if (payload.error === 'ORDER_RESULT_DISABLED') {
+          setFulfillmentState('waiting_payment');
+          setFulfillmentMessage('После оплаты код появится здесь автоматически.');
+        } else {
+          setFulfillmentState('error');
+          setFulfillmentMessage('Не удалось получить код автоматически. Напишите в поддержку с номером заказа.');
+        }
+      } catch (_error) {
+        if (!cancelled) {
+          setFulfillmentState('waiting_payment');
+          setFulfillmentMessage('Ожидаем оплату. После оплаты код появится здесь автоматически.');
+        }
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(checkResult, 8000);
+      }
+    }
+
+    timeoutId = window.setTimeout(checkResult, 5000);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [digitalCodes.length, registeredOrder]);
+
+  useEffect(() => {
     if (visibleProducts.length === 0) return;
     if (visibleProducts.some((product) => product.id === selectedProductId)) return;
     const firstProduct = visibleProducts[0];
@@ -613,6 +694,9 @@ export function App() {
     setRegisteredOrder(null);
     setPaymentUrl(null);
     setShowPaymentFallback(false);
+    setFulfillmentState('idle');
+    setFulfillmentMessage(null);
+    setDigitalCodes([]);
   }, [selectedProductId, violetCatalog, visibleProducts]);
 
   useEffect(() => {
@@ -623,6 +707,9 @@ export function App() {
     setRegisteredOrder(null);
     setPaymentUrl(null);
     setShowPaymentFallback(false);
+    setFulfillmentState('idle');
+    setFulfillmentMessage(null);
+    setDigitalCodes([]);
   }, [displayableSelectedProductOffers, selectedOffer, selectedProduct]);
 
   return (
@@ -726,9 +813,7 @@ export function App() {
                     setSelectedOffer(offer);
                     setOrderStatus('idle');
                     setOrderError(null);
-                    setRegisteredOrder(null);
-                    setPaymentUrl(null);
-                    setShowPaymentFallback(false);
+                    resetCheckoutState();
                   }}
                 >
                   <span>{formatOfferNominal(offer, selectedProduct)}</span>
@@ -864,7 +949,18 @@ export function App() {
               <strong>Заказ создан</strong>
               <span>Номер заказа: {registeredOrder.orderNumber}</span>
               <span>Сумма: {formatRub(registeredOrder.amount / 100)}</span>
-              <span>Статус: Ожидает оплаты</span>
+              <span>
+                Статус: {fulfillmentState === 'delivered' ? 'Код получен' : 'Ожидает оплаты'}
+              </span>
+              {fulfillmentMessage && <span>{fulfillmentMessage}</span>}
+              {digitalCodes.length > 0 && (
+                <div className="digital-code-box">
+                  <strong>Цифровой код</strong>
+                  {digitalCodes.map((code) => (
+                    <code key={code}>{code}</code>
+                  ))}
+                </div>
+              )}
               {showPaymentFallback && paymentUrl && (
                 <button
                   className="btn -accent"

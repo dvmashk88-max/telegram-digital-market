@@ -502,6 +502,22 @@ button {
   color: #fecaca;
 }
 
+.digital-code-box {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.digital-code-box code {
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.42);
+  color: #ffffff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
 @media (max-width: 860px) {
   .app {
     padding: 18px;

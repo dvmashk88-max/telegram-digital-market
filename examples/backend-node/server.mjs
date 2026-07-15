@@ -1113,10 +1113,7 @@ async function fulfillOrderById(id) {
     };
   }
 
-  if (
-    process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true'
-    || process.env.ALLOWED_FULFILLMENT_ORDER_ID !== order.id
-  ) {
+  if (process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true') {
     await resetSupplierNotStarted(order.id);
     return {
       responseStatus: 503,

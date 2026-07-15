@@ -1382,7 +1382,7 @@ async function loadFulfillmentReconcileCandidates() {
       FROM orders
       WHERE alfa_order_id IS NOT NULL
         AND payment_status IN ('registered', 'pending', 'paid')
-        AND supplier_status IN ('not_started', 'failed')
+        AND supplier_status IN ('not_started', 'ordered', 'failed')
       ORDER BY created_at ASC
       LIMIT $1`,
     [FULFILLMENT_RECONCILE_BATCH_SIZE],

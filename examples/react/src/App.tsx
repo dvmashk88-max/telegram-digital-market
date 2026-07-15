@@ -165,7 +165,7 @@ const PRODUCTS: Product[] = [
     id: 'apple-in',
     category: 'gift-cards',
     name: 'App Store & iTunes (Индия)',
-    description: 'Подарочная карта App Store и iTunes для индийского аккаунта Apple. После оплаты код появится прямо здесь, в приложении.',
+    description: 'Подарочная карта App Store и iTunes для индийского аккаунта Apple. После оплаты код будет отправлен на e-mail.',
     denominations: [],
     nominalCurrency: 'INR',
     orderFlow: 'code_delivery',
@@ -380,7 +380,7 @@ function normalizeTelegramUsername(value: string): string {
 
 function getOrderFlowTitle(orderFlow: OrderFlow): string {
   const labels: Record<OrderFlow, string> = {
-    code_delivery: 'Как вы получите код',
+    code_delivery: 'E-mail для получения цифрового кода',
     steam_balance: 'Пополнение Steam',
     telegram_stars: 'Telegram Stars',
     telegram_premium: 'Telegram Premium',
@@ -391,7 +391,7 @@ function getOrderFlowTitle(orderFlow: OrderFlow): string {
 
 function getOrderFlowHint(orderFlow: OrderFlow): string {
   const hints: Record<OrderFlow, string> = {
-    code_delivery: 'После оплаты код появится прямо здесь, в приложении.',
+    code_delivery: 'После оплаты цифровой код будет отправлен на указанный e-mail.',
     steam_balance: 'Пополнение будет зачислено на указанный аккаунт Steam. Проверьте логин перед оплатой.',
     telegram_stars: 'Stars будут начислены на указанный аккаунт Telegram. Укажите username без ошибок.',
     telegram_premium: 'Premium будет оформлен на указанный аккаунт Telegram. Проверьте username перед оплатой.',
@@ -782,7 +782,7 @@ export function App() {
           setFulfillmentMessage('Получаем цифровой код.');
         } else if (payload.error === 'ORDER_RESULT_DISABLED') {
           setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('После оплаты код появится здесь автоматически.');
+          setFulfillmentMessage('После оплаты цифровой код будет отправлен на указанный e-mail.');
         } else {
           setFulfillmentState('error');
           setFulfillmentMessage('Не удалось получить код автоматически. Напишите в поддержку с номером заказа.');
@@ -975,10 +975,12 @@ export function App() {
             </button>
           )}
 
-          <div className="delivery-box">
-            <span className="delivery-box__title">{getOrderFlowTitle(selectedOrderFlow)}</span>
-            <p>{getOrderFlowHint(selectedOrderFlow)}</p>
-          </div>
+          {selectedOrderFlow !== 'code_delivery' && (
+            <div className="delivery-box">
+              <span className="delivery-box__title">{getOrderFlowTitle(selectedOrderFlow)}</span>
+              <p>{getOrderFlowHint(selectedOrderFlow)}</p>
+            </div>
+          )}
 
           {selectedOrderFlow === 'steam_balance' && (
             <>

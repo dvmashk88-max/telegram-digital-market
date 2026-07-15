@@ -104,6 +104,11 @@ const FAZER_REQUEST_TIMEOUT_MS = 10_000;
 const ORDER_CURRENCY = '810';
 const FULFILLMENT_RECONCILE_INTERVAL_MS = 30_000;
 const FULFILLMENT_RECONCILE_BATCH_SIZE = 5;
+const SMTP_CONNECTION_TIMEOUT_MS = 15_000;
+const SMTP_GREETING_TIMEOUT_MS = 10_000;
+const SMTP_SOCKET_TIMEOUT_MS = 20_000;
+const SMTP_SEND_MAX_ATTEMPTS = 3;
+const SMTP_RETRYABLE_CODES = new Set(['ESOCKET', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN']);
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -181,6 +186,28 @@ function sanitizeErrorMessage(error) {
     .slice(0, 500);
 }
 
+function getSafeSmtpError(error) {
+  return {
+    code: error?.code ?? null,
+    command: error?.command ?? null,
+    responseCode: error?.responseCode ?? null,
+    syscall: error?.syscall ?? null,
+    hostname: error?.hostname ?? SMTP_HOST ?? null,
+    port: error?.port ?? SMTP_PORT ?? null,
+    message: sanitizeErrorMessage(error),
+  };
+}
+
+function isRetryableSmtpError(error) {
+  return SMTP_RETRYABLE_CODES.has(String(error?.code ?? ''));
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -195,6 +222,12 @@ function createSmtpTransport() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_PORT === 465,
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+    tls: {
+      servername: SMTP_HOST,
+    },
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASSWORD,
@@ -933,13 +966,32 @@ async function sendDeliveredOrderEmail(order) {
   try {
     const product = await resolveOrderEmailProduct(order);
     const message = buildDeliveredEmail({ order, product, codes });
-    const info = await createSmtpTransport().sendMail({
-      from: `"Маркет цифровых товаров" <${SMTP_USER}>`,
-      to: customerEmail,
-      subject: message.subject,
-      html: message.html,
-      text: message.text,
-    });
+    let info;
+
+    for (let attempt = 1; attempt <= SMTP_SEND_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        info = await createSmtpTransport().sendMail({
+          from: `"Маркет цифровых товаров" <${SMTP_USER}>`,
+          to: customerEmail,
+          subject: message.subject,
+          html: message.html,
+          text: message.text,
+        });
+        break;
+      } catch (error) {
+        const safeError = getSafeSmtpError(error);
+        console.warn('[email] SMTP send attempt failed', {
+          orderId: order.id,
+          attempt,
+          ...safeError,
+        });
+        if (attempt >= SMTP_SEND_MAX_ATTEMPTS || !isRetryableSmtpError(error)) {
+          throw error;
+        }
+        await wait(750 * attempt);
+      }
+    }
+
     await markEmailStatus(order.id, 'sent', {
       sentAt: new Date(),
       error: null,
@@ -947,8 +999,9 @@ async function sendDeliveredOrderEmail(order) {
     });
     return { status: 'sent', skipped: false };
   } catch (error) {
-    await markEmailStatus(order.id, 'failed', { error: sanitizeErrorMessage(error) });
-    return { status: 'failed', skipped: false };
+    const safeError = getSafeSmtpError(error);
+    await markEmailStatus(order.id, 'failed', { error: safeError.code ?? safeError.message });
+    return { status: 'failed', skipped: false, error: safeError };
   }
 }
 

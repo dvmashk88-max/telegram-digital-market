@@ -66,6 +66,13 @@ button {
   box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.18);
 }
 
+.field-hint {
+  margin: -4px 0 14px;
+  color: #aaa5cf;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .btn {
   width: 100%;
   min-height: 48px;

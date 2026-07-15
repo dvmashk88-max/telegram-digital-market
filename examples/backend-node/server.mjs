@@ -1,4 +1,5 @@
 import express from 'express';
+import nodemailer from 'nodemailer';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -12,6 +13,10 @@ import {
   FAZERCARDS_API_BASE,
   FAZERCARDS_API_KEY,
   PORT,
+  SMTP_HOST,
+  SMTP_PASSWORD,
+  SMTP_PORT,
+  SMTP_USER,
   STATIC_DIR as STATIC_DIR_FROM_ENV,
 } from '../../config.mjs';
 import {
@@ -97,6 +102,8 @@ const MARKUP_PERCENT = 50;
 const ALFA_REQUEST_TIMEOUT_MS = 10_000;
 const FAZER_REQUEST_TIMEOUT_MS = 10_000;
 const ORDER_CURRENCY = '810';
+const FULFILLMENT_RECONCILE_INTERVAL_MS = 30_000;
+const FULFILLMENT_RECONCILE_BATCH_SIZE = 5;
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
   app_store_itunes_tr: 'TRY',
   app_store_itunes_us: 'USD',
@@ -146,9 +153,64 @@ function resolveOrderFlow(productId, source) {
   };
 }
 
+function normalizeCustomerEmail(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length < 6 || normalized.length > 254) return null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return null;
+  return normalized;
+}
+
+function maskEmail(value) {
+  const normalized = normalizeCustomerEmail(value);
+  if (!normalized) return null;
+  const [local, domain] = normalized.split('@');
+  const visible = local.slice(0, 1);
+  return `${visible}***@${domain}`;
+}
+
+function isSmtpConfigured() {
+  return Boolean(SMTP_HOST && SMTP_USER && SMTP_PASSWORD && Number.isFinite(SMTP_PORT));
+}
+
+function sanitizeErrorMessage(error) {
+  const raw = error?.code ?? error?.responseCode ?? error?.message ?? 'UNKNOWN_ERROR';
+  return String(raw)
+    .replaceAll(SMTP_PASSWORD, '[secret]')
+    .replaceAll(SMTP_USER, '[smtp-user]')
+    .slice(0, 500);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function createSmtpTransport() {
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASSWORD,
+    },
+  });
+}
+
 if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {
   console.warn(
     '[boot] Missing FAZERCARDS_API_BASE / FAZERCARDS_API_KEY — /api/fazercards/giftcards will return 500 until they are set.',
+  );
+}
+
+if (!SMTP_HOST || !SMTP_USER || !SMTP_PASSWORD) {
+  console.warn(
+    '[boot] Missing SMTP_HOST / SMTP_USER / SMTP_PASSWORD — delivered order e-mails will be skipped until they are set.',
   );
 }
 
@@ -624,6 +686,8 @@ function formatOrder(row, options = {}) {
     currency: row.currency,
     paymentStatus: row.payment_status,
     supplierStatus: row.supplier_status,
+    emailStatus: row.email_status,
+    customerEmailMasked: maskEmail(row.customer_email),
   };
 
   if (options.includeSupplierOrderId) {
@@ -640,6 +704,7 @@ function formatOrder(row, options = {}) {
 
 async function createStoredOrder({
   maxUserId,
+  customerEmail,
   categoryId,
   cardId,
   quantity,
@@ -656,6 +721,7 @@ async function createStoredOrder({
         `INSERT INTO orders (
           order_number,
           max_user_id,
+          customer_email,
           category_id,
           card_id,
           quantity,
@@ -664,11 +730,12 @@ async function createStoredOrder({
           payment_status,
           supplier_status,
           idempotency_key
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'created', 'not_started', $8)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'created', 'not_started', $9)
         RETURNING *`,
         [
           orderNumber,
           maxUserId,
+          customerEmail,
           categoryId,
           cardId,
           quantity,
@@ -712,6 +779,8 @@ function formatFulfillmentOrder(row) {
     paymentStatus: row.payment_status,
     supplierStatus: row.supplier_status,
     supplierOrderId: row.supplier_order_id,
+    emailStatus: row.email_status,
+    customerEmailMasked: maskEmail(row.customer_email),
   };
 }
 
@@ -751,6 +820,138 @@ function getSavedCodes(row) {
   return [];
 }
 
+async function markEmailStatus(orderId, status, fields = {}) {
+  const result = await query(
+    `UPDATE orders
+      SET email_status = $2,
+          email_sent_at = COALESCE($3, email_sent_at),
+          email_error = $4,
+          email_message_id = COALESCE($5, email_message_id),
+          updated_at = now()
+      WHERE id = $1
+      RETURNING *`,
+    [
+      orderId,
+      status,
+      fields.sentAt ?? null,
+      fields.error ?? null,
+      fields.messageId ?? null,
+    ],
+  );
+  return result.rows[0];
+}
+
+async function resolveOrderEmailProduct(order) {
+  try {
+    const payload = await fetchFazerCardsJson('/api/v2/giftcards/cards', { category_id: order.category_id });
+    const offers = Array.isArray(payload.offers) ? payload.offers : [];
+    const offer = offers.find((item) => (item.card_id ?? item.id) === order.card_id);
+    const normalized = offer
+      ? normalizePricedOffer(order.category_id, offer, {
+        expectedCurrency: PRICED_GIFTCARD_CATEGORY_CURRENCIES[order.category_id],
+      })
+      : null;
+
+    return {
+      title: offer?.name ?? payload.name ?? order.category_id,
+      region: normalized?.currency ?? offer?.currency ?? PRICED_GIFTCARD_CATEGORY_CURRENCIES[order.category_id] ?? 'цифровой товар',
+      nominal: normalized ? `${normalized.nominal} ${normalized.currency ?? ''}`.trim() : offer?.name ?? order.card_id,
+      activation: offer?.activation_instruction ?? offer?.activationInstruction ?? offer?.instructions ?? offer?.note ?? '',
+    };
+  } catch (_error) {
+    return {
+      title: order.category_id,
+      region: 'цифровой товар',
+      nominal: order.card_id,
+      activation: '',
+    };
+  }
+}
+
+function buildDeliveredEmail({ order, product, codes }) {
+  const codeBlock = codes.map((code) => escapeHtml(code)).join('\n');
+  const htmlCodes = codes
+    .map((code) => `<div style="margin:8px 0;padding:14px 16px;border-radius:10px;background:#f3f4f6;color:#111827;font-size:22px;font-weight:700;letter-spacing:.04em;">${escapeHtml(code)}</div>`)
+    .join('');
+  const activationHtml = product.activation
+    ? `<p><strong>Инструкция по активации:</strong><br>${escapeHtml(product.activation)}</p>`
+    : '';
+  const activationText = product.activation
+    ? `\nИнструкция по активации:\n${product.activation}\n`
+    : '';
+
+  return {
+    subject: 'Ваш цифровой товар готов',
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827;">
+        <h1>Ваш заказ готов</h1>
+        <p>Номер заказа: <strong>${escapeHtml(order.order_number)}</strong></p>
+        <p>Товар: <strong>${escapeHtml(product.title)}</strong></p>
+        <p>Регион: <strong>${escapeHtml(product.region)}</strong></p>
+        <p>Номинал: <strong>${escapeHtml(product.nominal)}</strong></p>
+        <p>Цифровой код:</p>
+        ${htmlCodes}
+        ${activationHtml}
+        <p><strong>Сохраните это письмо.</strong></p>
+        <p>Если письмо попало в папку «Спам», отметьте его как не спам.</p>
+      </div>
+    `,
+    text: [
+      'Ваш заказ готов',
+      '',
+      `Номер заказа: ${order.order_number}`,
+      `Товар: ${product.title}`,
+      `Регион: ${product.region}`,
+      `Номинал: ${product.nominal}`,
+      '',
+      'Цифровой код:',
+      codeBlock,
+      activationText,
+      'Сохраните это письмо.',
+    ].join('\n'),
+  };
+}
+
+async function sendDeliveredOrderEmail(order) {
+  const codes = getSavedCodes(order);
+  if (order.email_status === 'sent') return { status: 'sent', skipped: false };
+  if (codes.length === 0) return { status: 'pending', skipped: true };
+
+  const customerEmail = normalizeCustomerEmail(order.customer_email);
+  if (!customerEmail) {
+    await markEmailStatus(order.id, 'skipped', { error: 'EMAIL_SKIPPED_NO_ADDRESS' });
+    return { status: 'skipped', skipped: true };
+  }
+
+  if (!isSmtpConfigured()) {
+    await markEmailStatus(order.id, 'failed', { error: 'SMTP_CONFIG_MISSING' });
+    return { status: 'failed', skipped: true };
+  }
+
+  await markEmailStatus(order.id, 'sending');
+
+  try {
+    const product = await resolveOrderEmailProduct(order);
+    const message = buildDeliveredEmail({ order, product, codes });
+    const info = await createSmtpTransport().sendMail({
+      from: `"Маркет цифровых товаров" <${SMTP_USER}>`,
+      to: customerEmail,
+      subject: message.subject,
+      html: message.html,
+      text: message.text,
+    });
+    await markEmailStatus(order.id, 'sent', {
+      sentAt: new Date(),
+      error: null,
+      messageId: info.messageId ?? null,
+    });
+    return { status: 'sent', skipped: false };
+  } catch (error) {
+    await markEmailStatus(order.id, 'failed', { error: sanitizeErrorMessage(error) });
+    return { status: 'failed', skipped: false };
+  }
+}
+
 function safeFazerFailureDetails(payload) {
   return {
     code: payload?.code,
@@ -769,12 +970,17 @@ async function loadOrderForFulfillment(id) {
       quantity,
       amount,
       currency,
+      customer_email,
       payment_status,
       supplier_status,
       supplier_order_id,
       supplier_payload,
       digital_code,
       digital_codes,
+      email_status,
+      email_sent_at,
+      email_error,
+      email_message_id,
       idempotency_key,
       created_at,
       updated_at
@@ -855,6 +1061,7 @@ async function processSupplierOrderPayload(orderId, payload) {
 
   if (supplierStatus === 'completed' && codes.length > 0) {
     const updatedOrder = await saveSupplierDelivered(orderId, supplierOrderId, supplierOrder, codes);
+    const emailDelivery = await sendDeliveredOrderEmail(updatedOrder);
     return {
       responseStatus: 200,
       body: {
@@ -862,6 +1069,7 @@ async function processSupplierOrderPayload(orderId, payload) {
         status: 'DELIVERED',
         order: formatFulfillmentOrder(updatedOrder),
         codes,
+        emailDelivery,
       },
     };
   }
@@ -1168,6 +1376,46 @@ async function fulfillOrderById(id) {
   }
 }
 
+async function loadFulfillmentReconcileCandidates() {
+  const result = await query(
+    `SELECT id
+      FROM orders
+      WHERE alfa_order_id IS NOT NULL
+        AND payment_status IN ('registered', 'pending', 'paid')
+        AND supplier_status IN ('not_started', 'failed')
+      ORDER BY created_at ASC
+      LIMIT $1`,
+    [FULFILLMENT_RECONCILE_BATCH_SIZE],
+  );
+  return result.rows.map((row) => row.id);
+}
+
+let fulfillmentReconcileRunning = false;
+
+async function reconcilePaidOrders() {
+  if (fulfillmentReconcileRunning || !isDatabaseConfigured()) return;
+  fulfillmentReconcileRunning = true;
+
+  try {
+    const orderIds = await loadFulfillmentReconcileCandidates();
+    for (const orderId of orderIds) {
+      const result = await fulfillOrderById(orderId);
+      if (result.body?.status === 'DELIVERED') {
+        console.log('[fulfillment] delivered order', { orderId });
+      } else if (result.body?.error && result.body.error !== 'PAYMENT_NOT_CONFIRMED') {
+        console.warn('[fulfillment] reconciliation stopped for order', {
+          orderId,
+          error: result.body.error,
+        });
+      }
+    }
+  } catch (error) {
+    console.warn('[fulfillment] reconciliation failed', { error: sanitizeErrorMessage(error) });
+  } finally {
+    fulfillmentReconcileRunning = false;
+  }
+}
+
 const app = express();
 
 // CORS for the mini-app served from a different origin.
@@ -1353,10 +1601,15 @@ app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), asy
 });
 
 app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, res) => {
-  const { maxUserId, categoryId, cardId, quantity } = req.body ?? {};
+  const { maxUserId, customerEmail, categoryId, cardId, quantity } = req.body ?? {};
 
   if (maxUserId !== undefined && (typeof maxUserId !== 'string' || maxUserId.trim().length > 255)) {
     return res.status(400).json({ error: 'INVALID_MAX_USER_ID' });
+  }
+
+  const normalizedCustomerEmail = normalizeCustomerEmail(customerEmail);
+  if (!normalizedCustomerEmail) {
+    return res.status(400).json({ error: 'INVALID_CUSTOMER_EMAIL' });
   }
 
   if (typeof categoryId !== 'string' || categoryId.trim() === '' || categoryId.length > 255) {
@@ -1413,6 +1666,7 @@ app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, re
 
     storedOrder = await createStoredOrder({
       maxUserId: trimmedMaxUserId,
+      customerEmail: normalizedCustomerEmail,
       categoryId: trimmedCategoryId,
       cardId: trimmedCardId,
       quantity,
@@ -1508,6 +1762,37 @@ app.get('/api/orders/:id/result', async (req, res) => {
   return res.status(processed.responseStatus).json(processed.body);
 });
 
+app.post('/api/orders/:id/email/retry', async (req, res) => {
+  const { id } = req.params;
+
+  if (!isValidUuid(id)) {
+    return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+  }
+
+  if (!isDatabaseConfigured()) {
+    return res.status(500).json({ error: 'ORDER_CONFIG_MISSING' });
+  }
+
+  try {
+    const order = await loadOrderForFulfillment(id);
+    if (!order) return res.status(404).json({ error: 'ORDER_NOT_FOUND' });
+    if (order.supplier_status !== 'delivered' || getSavedCodes(order).length === 0) {
+      return res.status(409).json({ error: 'ORDER_NOT_DELIVERED' });
+    }
+
+    const emailDelivery = await sendDeliveredOrderEmail({
+      ...order,
+      email_status: order.email_status === 'sent' ? 'sent' : 'pending',
+    });
+    return res.json({
+      ok: emailDelivery.status === 'sent',
+      emailDelivery,
+    });
+  } catch (_error) {
+    return res.status(500).json({ error: 'EMAIL_SEND_FAILED' });
+  }
+});
+
 app.get('/api/orders/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -1532,9 +1817,14 @@ app.get('/api/orders/:id', async (req, res) => {
         quantity,
         amount,
         currency,
+        customer_email,
         payment_status,
         supplier_status,
         supplier_order_id,
+        email_status,
+        email_sent_at,
+        email_error,
+        email_message_id,
         created_at,
         updated_at
       FROM orders
@@ -1662,4 +1952,10 @@ app.listen(PORT, () => {
   console.log(
     `[boot] listening on :${PORT}${STATIC_DIR ? ` (static from ${STATIC_DIR})` : ''}`,
   );
+  setTimeout(() => {
+    void reconcilePaidOrders();
+  }, 5_000);
+  setInterval(() => {
+    void reconcilePaidOrders();
+  }, FULFILLMENT_RECONCILE_INTERVAL_MS);
 });

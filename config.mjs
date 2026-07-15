@@ -13,6 +13,12 @@ export const ALFA_RETURN_URL = process.env.ALFA_RETURN_URL ?? '';
 
 export const DATABASE_URL = process.env.DATABASE_URL ?? '';
 
+export const SMTP_HOST = process.env.SMTP_HOST ?? '';
+export const SMTP_PORT = Number.parseInt(process.env.SMTP_PORT ?? '465', 10);
+export const SMTP_USER = process.env.SMTP_USER ?? '';
+export const SMTP_PASSWORD = process.env.SMTP_PASSWORD ?? '';
+export const TEST_EMAIL = process.env.TEST_EMAIL ?? '';
+
 export const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 export const STATIC_DIR = process.env.STATIC_DIR ?? '';
 

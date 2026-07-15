@@ -74,6 +74,8 @@ interface RegisteredOrder {
   currency: string;
   paymentStatus: string;
   supplierStatus: string;
+  emailStatus?: string;
+  customerEmailMasked?: string | null;
 }
 
 type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'error';
@@ -103,6 +105,7 @@ const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
 const RESULT_POLL_INTERVAL_MS = 8000;
 const RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CATEGORIES: Category[] = [
   { id: 'gift-cards', name: 'Apple', subtitle: 'Подарочные карты' },
@@ -399,13 +402,22 @@ function getOrderFlowHint(orderFlow: OrderFlow): string {
 
 function getDeliverySummary(orderFlow: OrderFlow): string {
   const summaries: Record<OrderFlow, string> = {
-    code_delivery: 'код будет показан в приложении после оплаты',
+    code_delivery: 'код будет отправлен на e-mail после оплаты',
     steam_balance: 'пополнение на аккаунт Steam',
     telegram_stars: 'Stars на указанный Telegram аккаунт',
     telegram_premium: 'Premium на указанный Telegram аккаунт',
     game_balance: 'пополнение игрового аккаунта',
   };
   return summaries[orderFlow];
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isValidEmail(value: string): boolean {
+  const normalized = normalizeEmail(value);
+  return normalized.length <= 254 && EMAIL_PATTERN.test(normalized);
 }
 
 function isOrderFieldFilled(field: OrderFieldKey, orderFields: OrderFields): boolean {
@@ -422,6 +434,7 @@ function getOrderRegisterErrorMessage(error: string | undefined): string {
     INVALID_SUPPLIER_PRICE: 'Не удалось рассчитать цену',
     ORDER_CONFIG_MISSING: 'Оплата временно недоступна',
     ORDER_STORAGE_FAILED: 'Не удалось создать заказ',
+    INVALID_CUSTOMER_EMAIL: 'Укажите корректный e-mail',
     ALFA_REGISTER_FAILED: 'Банк отклонил создание платежа',
     ALFA_REQUEST_FAILED: 'Не удалось связаться с банком',
   };
@@ -469,6 +482,7 @@ export function App() {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [orderRegistering, setOrderRegistering] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
+  const [customerEmail, setCustomerEmail] = useState('');
   const [registeredOrder, setRegisteredOrder] = useState<RegisteredOrder | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [showPaymentFallback, setShowPaymentFallback] = useState(false);
@@ -562,9 +576,12 @@ export function App() {
   const clientPriceRub = selectedOffer?.priceRub ?? null;
   const selectedOrderFlow = resolveOrderFlow(selectedProduct, selectedProductMeta);
   const requiredOrderFields = getRequiredOrderFields(selectedOrderFlow, selectedProductMeta);
+  const normalizedCustomerEmail = normalizeEmail(customerEmail);
+  const isCustomerEmailValid = isValidEmail(customerEmail);
   const canContinue =
     selectedProduct !== null &&
     clientPriceRub !== null &&
+    (selectedOrderFlow !== 'code_delivery' || isCustomerEmailValid) &&
     requiredOrderFields.every((field) => isOrderFieldFilled(field, orderFields));
 
   function resetCheckoutState() {
@@ -610,6 +627,13 @@ export function App() {
     resetCheckoutState();
   }
 
+  function updateCustomerEmail(value: string) {
+    setCustomerEmail(value);
+    setOrderStatus('idle');
+    setOrderError(null);
+    resetCheckoutState();
+  }
+
   function previewOrder() {
     if (!canContinue) return;
     setOrderStatus('preview');
@@ -635,7 +659,8 @@ export function App() {
       const response = await fetch(ORDER_REGISTER_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+          body: JSON.stringify({
+          customerEmail: normalizedCustomerEmail,
           categoryId,
           cardId,
           quantity: 1,
@@ -656,12 +681,12 @@ export function App() {
       setRegisteredOrder(payload.order);
       setPaymentUrl(payload.formUrl);
       setFulfillmentState('waiting_payment');
-      setFulfillmentMessage('Проверяем оплату.');
+      setFulfillmentMessage('Оплата обрабатывается.');
       saveStoredCheckoutOrder({
         order: payload.order,
         paymentUrl: payload.formUrl,
         fulfillmentState: 'waiting_payment',
-        fulfillmentMessage: 'Проверяем оплату.',
+        fulfillmentMessage: 'Оплата обрабатывается.',
         digitalCodes: [],
         savedAt: Date.now(),
       });
@@ -698,7 +723,7 @@ export function App() {
     if (!registeredOrder) return;
     setDigitalCodes([]);
     setFulfillmentState('waiting_payment');
-    setFulfillmentMessage('Проверяем оплату.');
+    setFulfillmentMessage('Оплата обрабатывается.');
     setResultRetryToken((value) => value + 1);
   }
 
@@ -724,6 +749,8 @@ export function App() {
           ok?: boolean;
           status?: string;
           codes?: string[];
+          order?: RegisteredOrder;
+          emailDelivery?: { status?: string };
           error?: string;
           orderStatus?: number;
         };
@@ -731,15 +758,21 @@ export function App() {
         if (cancelled) return;
 
         if (response.ok && payload.ok === true && payload.status === 'DELIVERED' && Array.isArray(payload.codes)) {
+          if (payload.order) setRegisteredOrder((prev) => ({ ...(prev ?? registeredOrder), ...payload.order }));
           setDigitalCodes(payload.codes);
           setFulfillmentState('delivered');
-          setFulfillmentMessage('Код готов.');
+          const maskedEmail = payload.order?.customerEmailMasked ?? registeredOrder.customerEmailMasked;
+          if ((payload.emailDelivery?.status === 'sent' || payload.order?.emailStatus === 'sent') && maskedEmail) {
+            setFulfillmentMessage(`Код отправлен на e-mail: ${maskedEmail}. Если письма нет в течение нескольких минут, проверьте папку “Спам”.`);
+          } else {
+            setFulfillmentMessage('Код готов. Если письмо не пришло в течение нескольких минут, проверьте папку “Спам”.');
+          }
           return;
         }
 
         if (payload.error === 'PAYMENT_NOT_CONFIRMED') {
           setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Проверяем оплату.');
+          setFulfillmentMessage('Оплата обрабатывается.');
         } else if (
           payload.status === 'SUPPLIER_PENDING'
           || payload.error === 'FULFILLMENT_IN_PROGRESS'
@@ -757,7 +790,7 @@ export function App() {
       } catch (_error) {
         if (!cancelled) {
           setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Проверяем оплату.');
+          setFulfillmentMessage('Оплата обрабатывается.');
         }
       }
 
@@ -767,7 +800,7 @@ export function App() {
     }
 
     setFulfillmentState('waiting_payment');
-    setFulfillmentMessage('Проверяем оплату.');
+    setFulfillmentMessage('Оплата обрабатывается.');
     timeoutId = window.setTimeout(checkResult, 1200);
 
     return () => {
@@ -1007,6 +1040,28 @@ export function App() {
                   />
                 </>
               )}
+            </>
+          )}
+
+          {selectedOrderFlow === 'code_delivery' && (
+            <>
+              <label className="field-label" htmlFor="customer-email">
+                E-mail для получения цифрового кода
+              </label>
+              <input
+                id="customer-email"
+                className="input"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="example@mail.ru"
+                value={customerEmail}
+                onChange={(e) => updateCustomerEmail(e.target.value)}
+                onBlur={() => setCustomerEmail(normalizedCustomerEmail)}
+              />
+              <p className="field-hint">
+                После оплаты цифровой код будет отправлен на этот адрес. Если письмо не пришло в течение нескольких минут, проверьте папку “Спам”.
+              </p>
             </>
           )}
 

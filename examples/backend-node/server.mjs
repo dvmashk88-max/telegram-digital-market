@@ -1,5 +1,4 @@
 import express from 'express';
-import nodemailer from 'nodemailer';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -25,6 +24,7 @@ import {
   MAX_WEBHOOK_URL,
 } from './max-bot.mjs';
 import { isDatabaseConfigured, query, withTransaction } from './db.mjs';
+import { createSmtpTransport } from './smtp.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR_CANDIDATES = [
@@ -104,10 +104,6 @@ const FAZER_REQUEST_TIMEOUT_MS = 10_000;
 const ORDER_CURRENCY = '810';
 const FULFILLMENT_RECONCILE_INTERVAL_MS = 30_000;
 const FULFILLMENT_RECONCILE_BATCH_SIZE = 5;
-const SMTP_CONNECTION_TIMEOUT_MS = 15_000;
-const SMTP_DNS_TIMEOUT_MS = 10_000;
-const SMTP_GREETING_TIMEOUT_MS = 10_000;
-const SMTP_SOCKET_TIMEOUT_MS = 20_000;
 const SMTP_SEND_MAX_ATTEMPTS = 3;
 const SMTP_RETRYABLE_CODES = new Set(['ESOCKET', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN']);
 const PRICED_GIFTCARD_CATEGORY_CURRENCIES = {
@@ -216,26 +212,6 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-}
-
-function createSmtpTransport() {
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    name: 'max-bot-production-6049.up.railway.app',
-    dnsTimeout: SMTP_DNS_TIMEOUT_MS,
-    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
-    greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
-    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
-    tls: {
-      servername: SMTP_HOST,
-    },
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASSWORD,
-    },
-  });
 }
 
 if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY) {

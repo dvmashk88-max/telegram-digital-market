@@ -78,6 +78,15 @@ interface RegisteredOrder {
 
 type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'error';
 
+interface StoredCheckoutOrder {
+  order: RegisteredOrder;
+  paymentUrl: string | null;
+  fulfillmentState: FulfillmentState;
+  fulfillmentMessage: string | null;
+  digitalCodes: string[];
+  savedAt: number;
+}
+
 const VIOLET_CATALOG_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/fazercards/violet-catalog'
@@ -91,6 +100,9 @@ const ORDER_RESULT_ENDPOINT =
     ? 'http://localhost:3351/api/orders'
     : `${window.location.origin}/api/orders`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
+const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
+const RESULT_POLL_INTERVAL_MS = 8000;
+const RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 const CATEGORIES: Category[] = [
   { id: 'gift-cards', name: 'Apple', subtitle: 'Подарочные карты' },
@@ -416,6 +428,33 @@ function getOrderRegisterErrorMessage(error: string | undefined): string {
   return error ? messages[error] ?? 'Не удалось создать платёж' : 'Не удалось создать платёж';
 }
 
+function readStoredCheckoutOrder(): StoredCheckoutOrder | null {
+  try {
+    const raw = window.localStorage.getItem(CHECKOUT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredCheckoutOrder>;
+    if (!parsed.order?.id || !parsed.order.orderNumber) return null;
+    return {
+      order: parsed.order,
+      paymentUrl: parsed.paymentUrl ?? null,
+      fulfillmentState: parsed.fulfillmentState ?? 'waiting_payment',
+      fulfillmentMessage: parsed.fulfillmentMessage ?? 'Проверяем оплату.',
+      digitalCodes: Array.isArray(parsed.digitalCodes) ? parsed.digitalCodes.filter((code) => typeof code === 'string') : [],
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveStoredCheckoutOrder(value: StoredCheckoutOrder) {
+  try {
+    window.localStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(value));
+  } catch (_error) {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function App() {
@@ -436,6 +475,30 @@ export function App() {
   const [fulfillmentState, setFulfillmentState] = useState<FulfillmentState>('idle');
   const [fulfillmentMessage, setFulfillmentMessage] = useState<string | null>(null);
   const [digitalCodes, setDigitalCodes] = useState<string[]>([]);
+  const [resultRetryToken, setResultRetryToken] = useState(0);
+
+  useEffect(() => {
+    const stored = readStoredCheckoutOrder();
+    if (!stored) return;
+    setRegisteredOrder(stored.order);
+    setPaymentUrl(stored.paymentUrl);
+    setFulfillmentState(stored.fulfillmentState);
+    setFulfillmentMessage(stored.fulfillmentMessage);
+    setDigitalCodes(stored.digitalCodes);
+    setOrderStatus('idle');
+  }, []);
+
+  useEffect(() => {
+    if (!registeredOrder) return;
+    saveStoredCheckoutOrder({
+      order: registeredOrder,
+      paymentUrl,
+      fulfillmentState,
+      fulfillmentMessage,
+      digitalCodes,
+      savedAt: Date.now(),
+    });
+  }, [digitalCodes, fulfillmentMessage, fulfillmentState, paymentUrl, registeredOrder]);
 
   useEffect(() => {
     let cancelled = false;
@@ -593,7 +656,15 @@ export function App() {
       setRegisteredOrder(payload.order);
       setPaymentUrl(payload.formUrl);
       setFulfillmentState('waiting_payment');
-      setFulfillmentMessage('После оплаты код появится здесь автоматически.');
+      setFulfillmentMessage('Проверяем оплату.');
+      saveStoredCheckoutOrder({
+        order: payload.order,
+        paymentUrl: payload.formUrl,
+        fulfillmentState: 'waiting_payment',
+        fulfillmentMessage: 'Проверяем оплату.',
+        digitalCodes: [],
+        savedAt: Date.now(),
+      });
       setOrderStatus('idle');
 
       const opened = window.open(payload.formUrl, '_blank', 'noopener,noreferrer');
@@ -614,13 +685,37 @@ export function App() {
     previewOrder();
   }
 
+  async function copyDigitalCode(code: string) {
+    try {
+      await window.navigator.clipboard.writeText(code);
+      setFulfillmentMessage('Код скопирован.');
+    } catch (_error) {
+      setFulfillmentMessage('Не удалось скопировать код автоматически.');
+    }
+  }
+
+  function retryResultPolling() {
+    if (!registeredOrder) return;
+    setDigitalCodes([]);
+    setFulfillmentState('waiting_payment');
+    setFulfillmentMessage('Проверяем оплату.');
+    setResultRetryToken((value) => value + 1);
+  }
+
   useEffect(() => {
     if (!registeredOrder || digitalCodes.length > 0) return undefined;
 
     let cancelled = false;
     let timeoutId: number | undefined;
+    const startedAt = Date.now();
 
     async function checkResult() {
+      if (Date.now() - startedAt > RESULT_POLL_TIMEOUT_MS) {
+        setFulfillmentState('error');
+        setFulfillmentMessage('Не удалось получить код автоматически. Попробуйте ещё раз.');
+        return;
+      }
+
       try {
         const response = await fetch(`${ORDER_RESULT_ENDPOINT}/${registeredOrder.id}/result`, {
           headers: { Accept: 'application/json' },
@@ -644,14 +739,14 @@ export function App() {
 
         if (payload.error === 'PAYMENT_NOT_CONFIRMED') {
           setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Ожидаем оплату. После оплаты код появится здесь автоматически.');
+          setFulfillmentMessage('Проверяем оплату.');
         } else if (
           payload.status === 'SUPPLIER_PENDING'
           || payload.error === 'FULFILLMENT_IN_PROGRESS'
           || payload.error === 'ORDER_NOT_DELIVERED'
         ) {
           setFulfillmentState('processing');
-          setFulfillmentMessage('Оплата получена. Готовим цифровой код.');
+          setFulfillmentMessage('Получаем цифровой код.');
         } else if (payload.error === 'ORDER_RESULT_DISABLED') {
           setFulfillmentState('waiting_payment');
           setFulfillmentMessage('После оплаты код появится здесь автоматически.');
@@ -662,22 +757,24 @@ export function App() {
       } catch (_error) {
         if (!cancelled) {
           setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Ожидаем оплату. После оплаты код появится здесь автоматически.');
+          setFulfillmentMessage('Проверяем оплату.');
         }
       }
 
       if (!cancelled) {
-        timeoutId = window.setTimeout(checkResult, 8000);
+        timeoutId = window.setTimeout(checkResult, RESULT_POLL_INTERVAL_MS);
       }
     }
 
-    timeoutId = window.setTimeout(checkResult, 5000);
+    setFulfillmentState('waiting_payment');
+    setFulfillmentMessage('Проверяем оплату.');
+    timeoutId = window.setTimeout(checkResult, 1200);
 
     return () => {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [digitalCodes.length, registeredOrder]);
+  }, [digitalCodes.length, registeredOrder, resultRetryToken]);
 
   useEffect(() => {
     if (visibleProducts.length === 0) return;
@@ -950,16 +1047,40 @@ export function App() {
               <span>Номер заказа: {registeredOrder.orderNumber}</span>
               <span>Сумма: {formatRub(registeredOrder.amount / 100)}</span>
               <span>
-                Статус: {fulfillmentState === 'delivered' ? 'Код получен' : 'Ожидает оплаты'}
+                Статус: {fulfillmentState === 'delivered'
+                  ? 'Код готов'
+                  : fulfillmentState === 'processing'
+                    ? 'Получаем цифровой код'
+                    : fulfillmentState === 'error'
+                      ? 'Не удалось получить код'
+                      : 'Проверяем оплату'}
               </span>
               {fulfillmentMessage && <span>{fulfillmentMessage}</span>}
               {digitalCodes.length > 0 && (
                 <div className="digital-code-box">
                   <strong>Цифровой код</strong>
                   {digitalCodes.map((code) => (
-                    <code key={code}>{code}</code>
+                    <div className="digital-code-row" key={code}>
+                      <code>{code}</code>
+                      <button
+                        className="btn-link"
+                        type="button"
+                        onClick={() => void copyDigitalCode(code)}
+                      >
+                        Скопировать
+                      </button>
+                    </div>
                   ))}
                 </div>
+              )}
+              {fulfillmentState === 'error' && digitalCodes.length === 0 && (
+                <button
+                  className="btn -accent"
+                  type="button"
+                  onClick={retryResultPolling}
+                >
+                  Не удалось получить код, повторить
+                </button>
               )}
               {showPaymentFallback && paymentUrl && (
                 <button

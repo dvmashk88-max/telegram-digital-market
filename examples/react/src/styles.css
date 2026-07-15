@@ -508,6 +508,11 @@ button {
   margin-top: 6px;
 }
 
+.digital-code-row {
+  display: grid;
+  gap: 6px;
+}
+
 .digital-code-box code {
   overflow-wrap: anywhere;
   padding: 8px;

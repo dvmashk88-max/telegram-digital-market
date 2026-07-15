@@ -1641,11 +1641,7 @@ app.post('/api/payment/status', express.json({ limit: '16kb' }), async (req, res
 });
 
 app.get('/api/payment/success', (_req, res) => {
-  res.json({
-    ok: true,
-    status: 'PAYMENT_RETURN_RECEIVED',
-    message: 'Возврат с платежной страницы получен',
-  });
+  res.redirect(303, '/?payment=success');
 });
 
 if (STATIC_DIR) {

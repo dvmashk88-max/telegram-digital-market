@@ -15,8 +15,8 @@ const START_MESSAGE = `🛒 Добро пожаловать в Маркет ци
 
 Выберите товар в магазине, оплатите заказ и получите цифровой код на указанную при покупке электронную почту.
 
-📢 Новости и поддержка:
-https://max.ru/join/5rgJD6UqIHysUXAuiOf2tlZaQmXpzlTk5OZjQUOpwLE
+🛟 Поддержка покупателей:
+https://max.ru/join/hNMlgpXt3un26lzqAYRmzbx7JX7Du4voOSLOBQepVwQ
 
 Нажмите кнопку ниже, чтобы открыть магазин.`;
 

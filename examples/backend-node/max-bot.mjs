@@ -4,15 +4,19 @@ export const MINI_APP_URL = 'https://max-bot-production-6049.up.railway.app';
 export const MAX_WEBHOOK_PATH = '/api/max/webhook';
 export const MAX_WEBHOOK_URL = `${MINI_APP_URL}${MAX_WEBHOOK_PATH}`;
 
-const START_MESSAGE = `🛒 Добро пожаловать в Маркет цифровых товаров
+const START_MESSAGE = `🛒 Добро пожаловать в Маркет цифровых товаров!
 
 Здесь можно купить цифровые коды и подарочные карты:
+
 • Apple / iTunes
 • Steam
-• игры и игровые пополнения
+• Игры и игровые пополнения
 • Telegram и другие сервисы
 
-Выберите товар в магазине, оплатите заказ и получите код прямо здесь в чате.
+Выберите товар в магазине, оплатите заказ и получите цифровой код на указанную при покупке электронную почту.
+
+📢 Новости и поддержка:
+https://max.ru/join/5rgJD6UqIHysUXAuiOf2tlZaQmXpzlTk5OZjQUOpwLE
 
 Нажмите кнопку ниже, чтобы открыть магазин.`;
 

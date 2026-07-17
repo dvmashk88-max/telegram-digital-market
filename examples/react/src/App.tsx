@@ -80,6 +80,7 @@ interface RegisteredOrder {
 
 interface StoredCheckoutOrder {
   order: RegisteredOrder;
+  customerEmail: string;
   paymentUrl: string | null;
   savedAt: number;
 }
@@ -98,6 +99,7 @@ const ORDER_RESULT_ENDPOINT =
     : `${window.location.origin}/api/orders`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
+const CHECKOUT_SUCCESS_CLEAR_DELAY_MS = 10 * 60 * 1000;
 const SUPPORT_URL = 'https://max.ru/join/hNMlgpXt3un26lzqAYRmzbx7JX7Du4voOSLOBQepVwQ';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -443,6 +445,7 @@ function readStoredCheckoutOrder(): StoredCheckoutOrder | null {
     if (!parsed.order?.id || !parsed.order.orderNumber) return null;
     return {
       order: parsed.order,
+      customerEmail: typeof parsed.customerEmail === 'string' ? parsed.customerEmail : '',
       paymentUrl: parsed.paymentUrl ?? null,
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     };
@@ -457,6 +460,18 @@ function saveStoredCheckoutOrder(value: StoredCheckoutOrder) {
   } catch (_error) {
     // Storage can be unavailable in restricted browser contexts.
   }
+}
+
+function clearStoredCheckoutOrder() {
+  try {
+    window.localStorage.removeItem(CHECKOUT_STORAGE_KEY);
+  } catch (_error) {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
+function getStoredCheckoutRemainingMs(storedCheckout: StoredCheckoutOrder) {
+  return CHECKOUT_SUCCESS_CLEAR_DELAY_MS - (Date.now() - storedCheckout.savedAt);
 }
 
 function getReturnOrderId() {
@@ -476,6 +491,48 @@ function isCompletedDeliveredOrder(order: RegisteredOrder) {
   return order.paymentStatus === 'paid'
     && order.supplierStatus === 'delivered'
     && order.emailStatus === 'sent';
+}
+
+function OrderSuccessView({
+  email,
+  showAutoRemovalNote = false,
+  onReturnToStore,
+}: {
+  email: string;
+  showAutoRemovalNote?: boolean;
+  onReturnToStore: () => void;
+}) {
+  return (
+    <div className="app order-page">
+      <main className="order-status">
+        <div className="order-status__mark" aria-hidden="true">
+          <span>✓</span>
+        </div>
+        <p className="eyebrow">MAX Digital Market</p>
+        <h1>✅ Заказ выполнен</h1>
+        <p className="order-status__body">
+          {`Код отправлен на:\n\n${email}\n\nПроверьте папки:\n\n• Входящие\n\n• Спам\n\n• Рассылки`}
+        </p>
+        {showAutoRemovalNote && (
+          <p className="order-status__note">
+            Информация об этом заказе будет автоматически удалена через 10 минут.
+          </p>
+        )}
+        <div className="order-status__actions">
+          <button
+            className="btn -accent"
+            type="button"
+            onClick={onReturnToStore}
+          >
+            🛒 Вернуться в магазин
+          </button>
+          <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
+            🛟 Поддержка
+          </a>
+        </div>
+      </main>
+    </div>
+  );
 }
 
 function OrderStatusScreen({
@@ -531,32 +588,87 @@ function OrderStatusScreen({
   const email = order.customerEmailMasked ?? '';
 
   return (
-    <div className="app order-page">
-      <main className="order-status">
-        <div className="order-status__mark" aria-hidden="true">
-          <span>✓</span>
-        </div>
-        <p className="eyebrow">MAX Digital Market</p>
-        <h1>✅ Заказ выполнен</h1>
-        <p className="order-status__body">
-          {`Код отправлен на:\n\n${email}\n\nПроверьте папки:\n\n• Входящие\n\n• Спам\n\n• Рассылки`}
-        </p>
-        <div className="order-status__actions">
-          <button
-            className="btn -accent"
-            type="button"
-            onClick={() => {
-              window.location.href = window.location.origin;
-            }}
-          >
-            🛒 Вернуться в магазин
-          </button>
-          <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
-            🛟 Поддержка
-          </a>
-        </div>
-      </main>
-    </div>
+    <OrderSuccessView
+      email={email}
+      onReturnToStore={() => {
+        window.location.href = window.location.origin;
+      }}
+    />
+  );
+}
+
+function StoredCheckoutStatusScreen({
+  storedCheckout,
+  onFallbackToStore,
+}: {
+  storedCheckout: StoredCheckoutOrder;
+  onFallbackToStore: () => void;
+}) {
+  const [order, setOrder] = useState<RegisteredOrder | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadOrder() {
+      try {
+        const response = await fetch(getOrderStatusEndpoint(storedCheckout.order.id), {
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await response.json() as {
+          ok?: boolean;
+          order?: RegisteredOrder;
+        };
+
+        if (cancelled) return;
+
+        if (response.ok && payload.ok === true && payload.order && isCompletedDeliveredOrder(payload.order)) {
+          setOrder(payload.order);
+          return;
+        }
+      } catch (_error) {
+        // Fall through to the storefront without showing technical status text.
+      }
+
+      if (!cancelled) onFallbackToStore();
+    }
+
+    void loadOrder();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onFallbackToStore, storedCheckout.order.id]);
+
+  useEffect(() => {
+    if (!order) return undefined;
+    const remainingMs = getStoredCheckoutRemainingMs(storedCheckout);
+    if (remainingMs <= 0) {
+      clearStoredCheckoutOrder();
+      onFallbackToStore();
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      clearStoredCheckoutOrder();
+      onFallbackToStore();
+    }, remainingMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [onFallbackToStore, order, storedCheckout]);
+
+  if (!order) return null;
+
+  return (
+    <OrderSuccessView
+      email={storedCheckout.customerEmail}
+      showAutoRemovalNote
+      onReturnToStore={() => {
+        clearStoredCheckoutOrder();
+        onFallbackToStore();
+      }}
+    />
   );
 }
 
@@ -578,23 +690,6 @@ function StorefrontApp() {
   const [registeredOrder, setRegisteredOrder] = useState<RegisteredOrder | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [showPaymentFallback, setShowPaymentFallback] = useState(false);
-
-  useEffect(() => {
-    const stored = readStoredCheckoutOrder();
-    if (!stored) return;
-    setRegisteredOrder(stored.order);
-    setPaymentUrl(stored.paymentUrl);
-    setOrderStatus('idle');
-  }, []);
-
-  useEffect(() => {
-    if (!registeredOrder) return;
-    saveStoredCheckoutOrder({
-      order: registeredOrder,
-      paymentUrl,
-      savedAt: Date.now(),
-    });
-  }, [paymentUrl, registeredOrder]);
 
   useEffect(() => {
     let cancelled = false;
@@ -738,7 +833,7 @@ function StorefrontApp() {
       const response = await fetch(ORDER_REGISTER_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        body: JSON.stringify({
           customerEmail: normalizedCustomerEmail,
           categoryId,
           cardId,
@@ -761,6 +856,7 @@ function StorefrontApp() {
       setPaymentUrl(payload.formUrl);
       saveStoredCheckoutOrder({
         order: payload.order,
+        customerEmail: normalizedCustomerEmail,
         paymentUrl: payload.formUrl,
         savedAt: Date.now(),
       });
@@ -1115,12 +1211,30 @@ function StorefrontApp() {
 export function App() {
   const returnOrderId = getReturnOrderId();
   const [showStorefront, setShowStorefront] = useState(false);
+  const [storedCheckout] = useState(() => {
+    if (returnOrderId || window.location.pathname !== '/') return null;
+    const stored = readStoredCheckoutOrder();
+    if (!stored?.order.id || !stored.customerEmail) return null;
+    if (getStoredCheckoutRemainingMs(stored) <= 0) {
+      clearStoredCheckoutOrder();
+      return null;
+    }
+    return stored;
+  });
   const handleFallbackToStore = useCallback(() => {
     setShowStorefront(true);
   }, []);
 
   if (returnOrderId && !showStorefront) {
     return <OrderStatusScreen orderId={returnOrderId} onFallbackToStore={handleFallbackToStore} />;
+  }
+  if (storedCheckout && !showStorefront) {
+    return (
+      <StoredCheckoutStatusScreen
+        storedCheckout={storedCheckout}
+        onFallbackToStore={handleFallbackToStore}
+      />
+    );
   }
   return <StorefrontApp />;
 }

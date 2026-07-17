@@ -593,6 +593,13 @@ button {
   line-height: 1.58;
 }
 
+.order-status__note {
+  margin: 0;
+  color: #aaa5cf;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .order-status__actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

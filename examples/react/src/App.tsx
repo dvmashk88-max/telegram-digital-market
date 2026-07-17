@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -78,13 +78,9 @@ interface RegisteredOrder {
   customerEmailMasked?: string | null;
 }
 
-type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'email_pending' | 'email_failed' | 'cancelled' | 'timeout' | 'error';
-
 interface StoredCheckoutOrder {
   order: RegisteredOrder;
   paymentUrl: string | null;
-  fulfillmentState: FulfillmentState;
-  fulfillmentMessage: string | null;
   savedAt: number;
 }
 
@@ -102,8 +98,6 @@ const ORDER_RESULT_ENDPOINT =
     : `${window.location.origin}/api/orders`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
-const ORDER_STATUS_POLL_INTERVAL_MS = 2500;
-const ORDER_STATUS_POLL_TIMEOUT_MS = 3 * 60 * 1000;
 const SUPPORT_URL = 'https://max.ru/join/hNMlgpXt3un26lzqAYRmzbx7JX7Du4voOSLOBQepVwQ';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -450,8 +444,6 @@ function readStoredCheckoutOrder(): StoredCheckoutOrder | null {
     return {
       order: parsed.order,
       paymentUrl: parsed.paymentUrl ?? null,
-      fulfillmentState: parsed.fulfillmentState ?? 'waiting_payment',
-      fulfillmentMessage: parsed.fulfillmentMessage ?? 'Проверяем оплату.',
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     };
   } catch (_error) {
@@ -480,101 +472,27 @@ function getOrderStatusEndpoint(orderId: string) {
   return `${ORDER_RESULT_ENDPOINT}/${encodeURIComponent(orderId)}`;
 }
 
-function isFinalFulfillmentState(state: FulfillmentState) {
-  return ['delivered', 'email_failed', 'cancelled', 'timeout', 'error'].includes(state);
+function isCompletedDeliveredOrder(order: RegisteredOrder) {
+  return order.paymentStatus === 'paid'
+    && order.supplierStatus === 'delivered'
+    && order.emailStatus === 'sent';
 }
 
-function mapOrderToFulfillmentState(order: RegisteredOrder): FulfillmentState {
-  if (order.paymentStatus === 'failed' || order.paymentStatus === 'cancelled') return 'cancelled';
-  if (order.paymentStatus !== 'paid') return 'waiting_payment';
-  if (order.supplierStatus === 'delivered') {
-    if (order.emailStatus === 'sent') return 'delivered';
-    if (order.emailStatus === 'failed') return 'email_failed';
-    return 'email_pending';
-  }
-  if (order.supplierStatus === 'failed') return 'error';
-  return 'processing';
-}
-
-function getOrderStatusCopy(state: FulfillmentState, order: RegisteredOrder | null, timedOut: boolean) {
-  const email = order?.customerEmailMasked ?? '';
-
-  if (timedOut || state === 'timeout') {
-    return {
-      title: 'Обработка заняла больше времени',
-      body: 'Обработка заняла больше времени. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.',
-    };
-  }
-
-  if (state === 'processing') {
-    return {
-      title: 'Оплата прошла',
-      body: 'Платёж подтверждён. Сейчас мы получаем цифровой товар и готовим отправку на вашу электронную почту.',
-    };
-  }
-
-  if (state === 'delivered') {
-    return {
-      title: 'Спасибо за покупку!',
-      body: `Ваш заказ успешно оплачен и выполнен.\n\nЦифровой код отправлен на электронную почту:\n\n${email}\n\nПроверьте папки „Входящие“, „Спам“ и „Рассылки“.`,
-    };
-  }
-
-  if (state === 'email_pending') {
-    return {
-      title: 'Заказ выполнен',
-      body: `Цифровой товар получен. Письмо на ${email} отправляется. Обычно это занимает не более нескольких минут.`,
-    };
-  }
-
-  if (state === 'email_failed') {
-    return {
-      title: 'Заказ выполнен, нужна помощь с доставкой',
-      body: 'Оплата прошла, цифровой код сохранён, но письмо не удалось отправить автоматически. Повторно оплачивать заказ не нужно. Обратитесь в поддержку.',
-    };
-  }
-
-  if (state === 'cancelled') {
-    return {
-      title: 'Платёж не подтверждён',
-      body: 'Мы не получили подтверждение оплаты по этому заказу. Если деньги списались, не оплачивайте заказ повторно и обратитесь в поддержку.',
-    };
-  }
-
-  if (state === 'error') {
-    return {
-      title: 'Нужна помощь с заказом',
-      body: 'Не удалось получить актуальный статус заказа. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.',
-    };
-  }
-
-  return {
-    title: 'Проверяем оплату',
-    body: 'Пожалуйста, подождите. Мы проверяем платёж и обрабатываем ваш заказ автоматически.',
-  };
-}
-
-function OrderStatusScreen({ orderId }: { orderId: string }) {
+function OrderStatusScreen({
+  orderId,
+  onFallbackToStore,
+}: {
+  orderId: string;
+  onFallbackToStore: () => void;
+}) {
   const [order, setOrder] = useState<RegisteredOrder | null>(null);
-  const [state, setState] = useState<FulfillmentState>('waiting_payment');
-  const [error, setError] = useState<string | null>(null);
-  const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let timeoutId: number | undefined;
-    const startedAt = Date.now();
 
-    async function checkOrder() {
+    async function loadOrder() {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId)) {
-        setState('error');
-        setError('Неверный номер заказа.');
-        return;
-      }
-
-      if (Date.now() - startedAt > ORDER_STATUS_POLL_TIMEOUT_MS) {
-        setTimedOut(true);
-        setState('timeout');
+        onFallbackToStore();
         return;
       }
 
@@ -590,73 +508,52 @@ function OrderStatusScreen({ orderId }: { orderId: string }) {
 
         if (cancelled) return;
 
-        if (!response.ok || payload.ok !== true || !payload.order) {
-          setState(response.status === 404 ? 'cancelled' : 'error');
-          setError(payload.error === 'ORDER_NOT_FOUND' ? 'Заказ не найден.' : null);
+        if (response.ok && payload.ok === true && payload.order && isCompletedDeliveredOrder(payload.order)) {
+          setOrder(payload.order);
           return;
         }
-
-        const nextState = mapOrderToFulfillmentState(payload.order);
-        setOrder(payload.order);
-        setState(nextState);
-        setError(null);
-
-        if (isFinalFulfillmentState(nextState)) return;
       } catch (_error) {
-        if (!cancelled) {
-          setState('waiting_payment');
-        }
+        // Fall through to the storefront without showing technical status text.
       }
 
-      if (!cancelled) {
-        timeoutId = window.setTimeout(checkOrder, ORDER_STATUS_POLL_INTERVAL_MS);
-      }
+      if (!cancelled) onFallbackToStore();
     }
 
-    void checkOrder();
+    void loadOrder();
 
     return () => {
       cancelled = true;
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [orderId]);
+  }, [onFallbackToStore, orderId]);
 
-  const copy = getOrderStatusCopy(state, order, timedOut);
-  const showSpinner = state === 'waiting_payment';
-  const showSupport = ['delivered', 'email_failed', 'timeout', 'error', 'cancelled'].includes(state);
+  if (!order) return null;
+
+  const email = order.customerEmailMasked ?? '';
 
   return (
     <div className="app order-page">
-      <main className={`order-status -${state}`}>
+      <main className="order-status">
         <div className="order-status__mark" aria-hidden="true">
-          {showSpinner ? <span className="order-status__spinner" /> : <span />}
+          <span>✓</span>
         </div>
         <p className="eyebrow">MAX Digital Market</p>
-        <h1>{copy.title}</h1>
-        <p className="order-status__body">{error ?? copy.body}</p>
-        {order && (
-          <div className="order-status__meta">
-            <span>Номер заказа</span>
-            <strong>{order.orderNumber}</strong>
-          </div>
-        )}
+        <h1>✅ Заказ выполнен</h1>
+        <p className="order-status__body">
+          {`Код отправлен на:\n\n${email}\n\nПроверьте папки:\n\n• Входящие\n\n• Спам\n\n• Рассылки`}
+        </p>
         <div className="order-status__actions">
-          {(state === 'delivered' || state === 'cancelled' || state === 'timeout' || state === 'error') && (
-            <button
-              className="btn -accent"
-              type="button"
-              onClick={() => {
-                window.location.href = window.location.origin;
-              }}
-            >
-              Вернуться в магазин
-            </button>
-          )}
-          {showSupport && (
-            <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
-              Поддержка покупателей
-            </a>
-          )}
+          <button
+            className="btn -accent"
+            type="button"
+            onClick={() => {
+              window.location.href = window.location.origin;
+            }}
+          >
+            🛒 Вернуться в магазин
+          </button>
+          <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
+            🛟 Поддержка
+          </a>
         </div>
       </main>
     </div>
@@ -681,17 +578,12 @@ function StorefrontApp() {
   const [registeredOrder, setRegisteredOrder] = useState<RegisteredOrder | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [showPaymentFallback, setShowPaymentFallback] = useState(false);
-  const [fulfillmentState, setFulfillmentState] = useState<FulfillmentState>('idle');
-  const [fulfillmentMessage, setFulfillmentMessage] = useState<string | null>(null);
-  const [resultRetryToken, setResultRetryToken] = useState(0);
 
   useEffect(() => {
     const stored = readStoredCheckoutOrder();
     if (!stored) return;
     setRegisteredOrder(stored.order);
     setPaymentUrl(stored.paymentUrl);
-    setFulfillmentState(stored.fulfillmentState);
-    setFulfillmentMessage(stored.fulfillmentMessage);
     setOrderStatus('idle');
   }, []);
 
@@ -700,11 +592,9 @@ function StorefrontApp() {
     saveStoredCheckoutOrder({
       order: registeredOrder,
       paymentUrl,
-      fulfillmentState,
-      fulfillmentMessage,
       savedAt: Date.now(),
     });
-  }, [fulfillmentMessage, fulfillmentState, paymentUrl, registeredOrder]);
+  }, [paymentUrl, registeredOrder]);
 
   useEffect(() => {
     let cancelled = false;
@@ -780,8 +670,6 @@ function StorefrontApp() {
     setRegisteredOrder(null);
     setPaymentUrl(null);
     setShowPaymentFallback(false);
-    setFulfillmentState('idle');
-    setFulfillmentMessage(null);
   }
 
   function selectCategory(categoryId: CategoryId) {
@@ -871,13 +759,9 @@ function StorefrontApp() {
 
       setRegisteredOrder(payload.order);
       setPaymentUrl(payload.formUrl);
-      setFulfillmentState('waiting_payment');
-      setFulfillmentMessage('Оплата обрабатывается.');
       saveStoredCheckoutOrder({
         order: payload.order,
         paymentUrl: payload.formUrl,
-        fulfillmentState: 'waiting_payment',
-        fulfillmentMessage: 'Оплата обрабатывается.',
         savedAt: Date.now(),
       });
       setOrderStatus('idle');
@@ -900,77 +784,6 @@ function StorefrontApp() {
     previewOrder();
   }
 
-  function retryResultPolling() {
-    if (!registeredOrder) return;
-    setFulfillmentState('waiting_payment');
-    setFulfillmentMessage('Оплата обрабатывается.');
-    setResultRetryToken((value) => value + 1);
-  }
-
-  useEffect(() => {
-    if (!registeredOrder || isFinalFulfillmentState(fulfillmentState)) return undefined;
-
-    let cancelled = false;
-    let timeoutId: number | undefined;
-    const startedAt = Date.now();
-
-    async function checkResult() {
-      if (Date.now() - startedAt > ORDER_STATUS_POLL_TIMEOUT_MS) {
-        setFulfillmentState('timeout');
-        setFulfillmentMessage('Обработка заняла больше времени. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.');
-        return;
-      }
-
-      try {
-        const response = await fetch(getOrderStatusEndpoint(registeredOrder.id), {
-          headers: { Accept: 'application/json' },
-        });
-        const payload = await response.json() as {
-          ok?: boolean;
-          order?: RegisteredOrder;
-          error?: string;
-        };
-
-        if (cancelled) return;
-
-        if (response.ok && payload.ok === true && payload.order) {
-          const nextOrder = { ...registeredOrder, ...payload.order };
-          const nextState = mapOrderToFulfillmentState(nextOrder);
-          setRegisteredOrder(nextOrder);
-          setFulfillmentState(nextState);
-          setFulfillmentMessage(getOrderStatusCopy(nextState, nextOrder, false).body);
-          if (isFinalFulfillmentState(nextState)) return;
-        } else if (payload.error === 'ORDER_NOT_FOUND') {
-          setFulfillmentState('cancelled');
-          setFulfillmentMessage('Заказ не найден.');
-          return;
-        } else {
-          setFulfillmentState('error');
-          setFulfillmentMessage('Не удалось получить актуальный статус заказа. Не оплачивайте заказ повторно и обратитесь в поддержку.');
-          return;
-        }
-      } catch (_error) {
-        if (!cancelled) {
-          setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Оплата обрабатывается.');
-        }
-      }
-
-      if (!cancelled) {
-        timeoutId = window.setTimeout(checkResult, ORDER_STATUS_POLL_INTERVAL_MS);
-      }
-    }
-
-    setFulfillmentState('waiting_payment');
-    setFulfillmentMessage('Оплата обрабатывается.');
-    timeoutId = window.setTimeout(checkResult, 1200);
-
-    return () => {
-      cancelled = true;
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    };
-  }, [registeredOrder?.id, resultRetryToken]);
-
   useEffect(() => {
     if (visibleProducts.length === 0) return;
     if (visibleProducts.some((product) => product.id === selectedProductId)) return;
@@ -986,8 +799,6 @@ function StorefrontApp() {
     setRegisteredOrder(null);
     setPaymentUrl(null);
     setShowPaymentFallback(false);
-    setFulfillmentState('idle');
-    setFulfillmentMessage(null);
   }, [selectedProductId, violetCatalog, visibleProducts]);
 
   useEffect(() => {
@@ -998,8 +809,6 @@ function StorefrontApp() {
     setRegisteredOrder(null);
     setPaymentUrl(null);
     setShowPaymentFallback(false);
-    setFulfillmentState('idle');
-    setFulfillmentMessage(null);
   }, [displayableSelectedProductOffers, selectedOffer, selectedProduct]);
 
   return (
@@ -1263,29 +1072,6 @@ function StorefrontApp() {
               <strong>Заказ создан</strong>
               <span>Номер заказа: {registeredOrder.orderNumber}</span>
               <span>Сумма: {formatRub(registeredOrder.amount / 100)}</span>
-              <span>
-                Статус: {fulfillmentState === 'delivered'
-                  ? 'Письмо отправлено'
-                  : fulfillmentState === 'email_pending'
-                    ? 'Письмо отправляется'
-                    : fulfillmentState === 'email_failed'
-                      ? 'Нужна помощь с доставкой'
-                  : fulfillmentState === 'processing'
-                    ? 'Заказ обрабатывается'
-                    : fulfillmentState === 'error'
-                      ? 'Нужна помощь с заказом'
-                      : 'Проверяем оплату'}
-              </span>
-              {fulfillmentMessage && <span>{fulfillmentMessage}</span>}
-              {(fulfillmentState === 'error' || fulfillmentState === 'timeout') && (
-                <button
-                  className="btn -accent"
-                  type="button"
-                  onClick={retryResultPolling}
-                >
-                  Проверить статус ещё раз
-                </button>
-              )}
               {showPaymentFallback && paymentUrl && (
                 <button
                   className="btn -accent"
@@ -1328,6 +1114,13 @@ function StorefrontApp() {
 
 export function App() {
   const returnOrderId = getReturnOrderId();
-  if (returnOrderId) return <OrderStatusScreen orderId={returnOrderId} />;
+  const [showStorefront, setShowStorefront] = useState(false);
+  const handleFallbackToStore = useCallback(() => {
+    setShowStorefront(true);
+  }, []);
+
+  if (returnOrderId && !showStorefront) {
+    return <OrderStatusScreen orderId={returnOrderId} onFallbackToStore={handleFallbackToStore} />;
+  }
   return <StorefrontApp />;
 }

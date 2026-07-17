@@ -1970,8 +1970,13 @@ app.post('/api/payment/status', express.json({ limit: '16kb' }), async (req, res
   }
 });
 
-app.get('/api/payment/success', (_req, res) => {
-  res.redirect(303, '/?payment=success');
+app.get('/api/payment/success', (req, res) => {
+  const redirectUrl = new URL('/', `${req.protocol}://${req.get('host')}`);
+  redirectUrl.searchParams.set('payment', 'success');
+  if (typeof req.query.mdmOrderId === 'string' && req.query.mdmOrderId.trim() !== '') {
+    redirectUrl.searchParams.set('mdmOrderId', req.query.mdmOrderId.trim());
+  }
+  res.redirect(303, `${redirectUrl.pathname}${redirectUrl.search}`);
 });
 
 if (STATIC_DIR) {

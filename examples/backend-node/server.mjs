@@ -167,7 +167,7 @@ function maskEmail(value) {
   const normalized = normalizeCustomerEmail(value);
   if (!normalized) return null;
   const [local, domain] = normalized.split('@');
-  const visible = local.slice(0, 1);
+  const visible = local.slice(0, Math.min(3, local.length));
   return `${visible}***@${domain}`;
 }
 
@@ -587,13 +587,20 @@ function normalizeTelegramPremium(payload) {
   };
 }
 
-async function registerAlfaOrder({ orderNumber, amount, description }) {
+function buildOrderReturnUrl(orderId) {
+  if (!ALFA_RETURN_URL) throw new Error('ALFA_RETURN_URL_MISSING');
+  const url = new URL(ALFA_RETURN_URL);
+  url.searchParams.set('mdmOrderId', orderId);
+  return url.toString();
+}
+
+async function registerAlfaOrder({ orderNumber, amount, description, returnUrl = ALFA_RETURN_URL }) {
   const params = new URLSearchParams({
     userName: ALFA_USERNAME,
     password: ALFA_PASSWORD,
     orderNumber,
     amount: String(amount),
-    returnUrl: ALFA_RETURN_URL,
+    returnUrl,
   });
   if (description !== undefined && description !== null && description !== '') {
     params.set('description', String(description));
@@ -1719,6 +1726,7 @@ app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, re
       orderNumber: storedOrder.order_number,
       amount: storedOrder.amount,
       description: `MAX Digital Market order ${storedOrder.order_number}`,
+      returnUrl: buildOrderReturnUrl(storedOrder.id),
     });
 
     const alfaErrorCode = alfaPayload?.errorCode;

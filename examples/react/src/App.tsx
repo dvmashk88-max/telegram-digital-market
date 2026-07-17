@@ -78,14 +78,13 @@ interface RegisteredOrder {
   customerEmailMasked?: string | null;
 }
 
-type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'error';
+type FulfillmentState = 'idle' | 'waiting_payment' | 'processing' | 'delivered' | 'email_pending' | 'email_failed' | 'cancelled' | 'timeout' | 'error';
 
 interface StoredCheckoutOrder {
   order: RegisteredOrder;
   paymentUrl: string | null;
   fulfillmentState: FulfillmentState;
   fulfillmentMessage: string | null;
-  digitalCodes: string[];
   savedAt: number;
 }
 
@@ -103,8 +102,9 @@ const ORDER_RESULT_ENDPOINT =
     : `${window.location.origin}/api/orders`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
 const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
-const RESULT_POLL_INTERVAL_MS = 8000;
-const RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+const ORDER_STATUS_POLL_INTERVAL_MS = 2500;
+const ORDER_STATUS_POLL_TIMEOUT_MS = 3 * 60 * 1000;
+const SUPPORT_URL = 'https://max.ru/join/hNMlgpXt3un26lzqAYRmzbx7JX7Du4voOSLOBQepVwQ';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CATEGORIES: Category[] = [
@@ -452,7 +452,6 @@ function readStoredCheckoutOrder(): StoredCheckoutOrder | null {
       paymentUrl: parsed.paymentUrl ?? null,
       fulfillmentState: parsed.fulfillmentState ?? 'waiting_payment',
       fulfillmentMessage: parsed.fulfillmentMessage ?? 'Проверяем оплату.',
-      digitalCodes: Array.isArray(parsed.digitalCodes) ? parsed.digitalCodes.filter((code) => typeof code === 'string') : [],
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     };
   } catch (_error) {
@@ -468,9 +467,205 @@ function saveStoredCheckoutOrder(value: StoredCheckoutOrder) {
   }
 }
 
+function getReturnOrderId() {
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get('mdmOrderId');
+  if (fromQuery) return fromQuery;
+
+  const pathMatch = window.location.pathname.match(/^\/order\/([0-9a-f-]{36})\/?$/i);
+  return pathMatch?.[1] ?? null;
+}
+
+function getOrderStatusEndpoint(orderId: string) {
+  return `${ORDER_RESULT_ENDPOINT}/${encodeURIComponent(orderId)}`;
+}
+
+function isFinalFulfillmentState(state: FulfillmentState) {
+  return ['delivered', 'email_failed', 'cancelled', 'timeout', 'error'].includes(state);
+}
+
+function mapOrderToFulfillmentState(order: RegisteredOrder): FulfillmentState {
+  if (order.paymentStatus === 'failed' || order.paymentStatus === 'cancelled') return 'cancelled';
+  if (order.paymentStatus !== 'paid') return 'waiting_payment';
+  if (order.supplierStatus === 'delivered') {
+    if (order.emailStatus === 'sent') return 'delivered';
+    if (order.emailStatus === 'failed') return 'email_failed';
+    return 'email_pending';
+  }
+  if (order.supplierStatus === 'failed') return 'error';
+  return 'processing';
+}
+
+function getOrderStatusCopy(state: FulfillmentState, order: RegisteredOrder | null, timedOut: boolean) {
+  const email = order?.customerEmailMasked ?? '';
+
+  if (timedOut || state === 'timeout') {
+    return {
+      title: 'Обработка заняла больше времени',
+      body: 'Обработка заняла больше времени. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.',
+    };
+  }
+
+  if (state === 'processing') {
+    return {
+      title: 'Оплата прошла',
+      body: 'Платёж подтверждён. Сейчас мы получаем цифровой товар и готовим отправку на вашу электронную почту.',
+    };
+  }
+
+  if (state === 'delivered') {
+    return {
+      title: 'Спасибо за покупку!',
+      body: `Ваш заказ успешно оплачен и выполнен.\n\nЦифровой код отправлен на электронную почту:\n\n${email}\n\nПроверьте папки „Входящие“, „Спам“ и „Рассылки“.`,
+    };
+  }
+
+  if (state === 'email_pending') {
+    return {
+      title: 'Заказ выполнен',
+      body: `Цифровой товар получен. Письмо на ${email} отправляется. Обычно это занимает не более нескольких минут.`,
+    };
+  }
+
+  if (state === 'email_failed') {
+    return {
+      title: 'Заказ выполнен, нужна помощь с доставкой',
+      body: 'Оплата прошла, цифровой код сохранён, но письмо не удалось отправить автоматически. Повторно оплачивать заказ не нужно. Обратитесь в поддержку.',
+    };
+  }
+
+  if (state === 'cancelled') {
+    return {
+      title: 'Платёж не подтверждён',
+      body: 'Мы не получили подтверждение оплаты по этому заказу. Если деньги списались, не оплачивайте заказ повторно и обратитесь в поддержку.',
+    };
+  }
+
+  if (state === 'error') {
+    return {
+      title: 'Нужна помощь с заказом',
+      body: 'Не удалось получить актуальный статус заказа. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.',
+    };
+  }
+
+  return {
+    title: 'Проверяем оплату',
+    body: 'Пожалуйста, подождите. Мы проверяем платёж и обрабатываем ваш заказ автоматически.',
+  };
+}
+
+function OrderStatusScreen({ orderId }: { orderId: string }) {
+  const [order, setOrder] = useState<RegisteredOrder | null>(null);
+  const [state, setState] = useState<FulfillmentState>('waiting_payment');
+  const [error, setError] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const startedAt = Date.now();
+
+    async function checkOrder() {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId)) {
+        setState('error');
+        setError('Неверный номер заказа.');
+        return;
+      }
+
+      if (Date.now() - startedAt > ORDER_STATUS_POLL_TIMEOUT_MS) {
+        setTimedOut(true);
+        setState('timeout');
+        return;
+      }
+
+      try {
+        const response = await fetch(getOrderStatusEndpoint(orderId), {
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await response.json() as {
+          ok?: boolean;
+          order?: RegisteredOrder;
+          error?: string;
+        };
+
+        if (cancelled) return;
+
+        if (!response.ok || payload.ok !== true || !payload.order) {
+          setState(response.status === 404 ? 'cancelled' : 'error');
+          setError(payload.error === 'ORDER_NOT_FOUND' ? 'Заказ не найден.' : null);
+          return;
+        }
+
+        const nextState = mapOrderToFulfillmentState(payload.order);
+        setOrder(payload.order);
+        setState(nextState);
+        setError(null);
+
+        if (isFinalFulfillmentState(nextState)) return;
+      } catch (_error) {
+        if (!cancelled) {
+          setState('waiting_payment');
+        }
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(checkOrder, ORDER_STATUS_POLL_INTERVAL_MS);
+      }
+    }
+
+    void checkOrder();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [orderId]);
+
+  const copy = getOrderStatusCopy(state, order, timedOut);
+  const showSpinner = state === 'waiting_payment';
+  const showSupport = ['delivered', 'email_failed', 'timeout', 'error', 'cancelled'].includes(state);
+
+  return (
+    <div className="app order-page">
+      <main className={`order-status -${state}`}>
+        <div className="order-status__mark" aria-hidden="true">
+          {showSpinner ? <span className="order-status__spinner" /> : <span />}
+        </div>
+        <p className="eyebrow">MAX Digital Market</p>
+        <h1>{copy.title}</h1>
+        <p className="order-status__body">{error ?? copy.body}</p>
+        {order && (
+          <div className="order-status__meta">
+            <span>Номер заказа</span>
+            <strong>{order.orderNumber}</strong>
+          </div>
+        )}
+        <div className="order-status__actions">
+          {(state === 'delivered' || state === 'cancelled' || state === 'timeout' || state === 'error') && (
+            <button
+              className="btn -accent"
+              type="button"
+              onClick={() => {
+                window.location.href = window.location.origin;
+              }}
+            >
+              Вернуться в магазин
+            </button>
+          )}
+          {showSupport && (
+            <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
+              Поддержка покупателей
+            </a>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function App() {
+function StorefrontApp() {
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('gift-cards');
   const [selectedProductId, setSelectedProductId] = useState('apple-tr');
   const [selectedOffer, setSelectedOffer] = useState<VioletCatalogOffer | null>(null);
@@ -488,7 +683,6 @@ export function App() {
   const [showPaymentFallback, setShowPaymentFallback] = useState(false);
   const [fulfillmentState, setFulfillmentState] = useState<FulfillmentState>('idle');
   const [fulfillmentMessage, setFulfillmentMessage] = useState<string | null>(null);
-  const [digitalCodes, setDigitalCodes] = useState<string[]>([]);
   const [resultRetryToken, setResultRetryToken] = useState(0);
 
   useEffect(() => {
@@ -498,7 +692,6 @@ export function App() {
     setPaymentUrl(stored.paymentUrl);
     setFulfillmentState(stored.fulfillmentState);
     setFulfillmentMessage(stored.fulfillmentMessage);
-    setDigitalCodes(stored.digitalCodes);
     setOrderStatus('idle');
   }, []);
 
@@ -509,10 +702,9 @@ export function App() {
       paymentUrl,
       fulfillmentState,
       fulfillmentMessage,
-      digitalCodes,
       savedAt: Date.now(),
     });
-  }, [digitalCodes, fulfillmentMessage, fulfillmentState, paymentUrl, registeredOrder]);
+  }, [fulfillmentMessage, fulfillmentState, paymentUrl, registeredOrder]);
 
   useEffect(() => {
     let cancelled = false;
@@ -590,7 +782,6 @@ export function App() {
     setShowPaymentFallback(false);
     setFulfillmentState('idle');
     setFulfillmentMessage(null);
-    setDigitalCodes([]);
   }
 
   function selectCategory(categoryId: CategoryId) {
@@ -687,7 +878,6 @@ export function App() {
         paymentUrl: payload.formUrl,
         fulfillmentState: 'waiting_payment',
         fulfillmentMessage: 'Оплата обрабатывается.',
-        digitalCodes: [],
         savedAt: Date.now(),
       });
       setOrderStatus('idle');
@@ -710,82 +900,54 @@ export function App() {
     previewOrder();
   }
 
-  async function copyDigitalCode(code: string) {
-    try {
-      await window.navigator.clipboard.writeText(code);
-      setFulfillmentMessage('Код скопирован.');
-    } catch (_error) {
-      setFulfillmentMessage('Не удалось скопировать код автоматически.');
-    }
-  }
-
   function retryResultPolling() {
     if (!registeredOrder) return;
-    setDigitalCodes([]);
     setFulfillmentState('waiting_payment');
     setFulfillmentMessage('Оплата обрабатывается.');
     setResultRetryToken((value) => value + 1);
   }
 
   useEffect(() => {
-    if (!registeredOrder || digitalCodes.length > 0) return undefined;
+    if (!registeredOrder || isFinalFulfillmentState(fulfillmentState)) return undefined;
 
     let cancelled = false;
     let timeoutId: number | undefined;
     const startedAt = Date.now();
 
     async function checkResult() {
-      if (Date.now() - startedAt > RESULT_POLL_TIMEOUT_MS) {
-        setFulfillmentState('error');
-        setFulfillmentMessage('Не удалось получить код автоматически. Попробуйте ещё раз.');
+      if (Date.now() - startedAt > ORDER_STATUS_POLL_TIMEOUT_MS) {
+        setFulfillmentState('timeout');
+        setFulfillmentMessage('Обработка заняла больше времени. Не оплачивайте заказ повторно. Проверьте почту или обратитесь в поддержку.');
         return;
       }
 
       try {
-        const response = await fetch(`${ORDER_RESULT_ENDPOINT}/${registeredOrder.id}/result`, {
+        const response = await fetch(getOrderStatusEndpoint(registeredOrder.id), {
           headers: { Accept: 'application/json' },
         });
         const payload = await response.json() as {
           ok?: boolean;
-          status?: string;
-          codes?: string[];
           order?: RegisteredOrder;
-          emailDelivery?: { status?: string };
           error?: string;
-          orderStatus?: number;
         };
 
         if (cancelled) return;
 
-        if (response.ok && payload.ok === true && payload.status === 'DELIVERED' && Array.isArray(payload.codes)) {
-          if (payload.order) setRegisteredOrder((prev) => ({ ...(prev ?? registeredOrder), ...payload.order }));
-          setDigitalCodes(payload.codes);
-          setFulfillmentState('delivered');
-          const maskedEmail = payload.order?.customerEmailMasked ?? registeredOrder.customerEmailMasked;
-          if ((payload.emailDelivery?.status === 'sent' || payload.order?.emailStatus === 'sent') && maskedEmail) {
-            setFulfillmentMessage(`Код отправлен на e-mail: ${maskedEmail}. Если письма нет в течение нескольких минут, проверьте папку “Спам”.`);
-          } else {
-            setFulfillmentMessage('Код готов. Если письмо не пришло в течение нескольких минут, проверьте папку “Спам”.');
-          }
+        if (response.ok && payload.ok === true && payload.order) {
+          const nextOrder = { ...registeredOrder, ...payload.order };
+          const nextState = mapOrderToFulfillmentState(nextOrder);
+          setRegisteredOrder(nextOrder);
+          setFulfillmentState(nextState);
+          setFulfillmentMessage(getOrderStatusCopy(nextState, nextOrder, false).body);
+          if (isFinalFulfillmentState(nextState)) return;
+        } else if (payload.error === 'ORDER_NOT_FOUND') {
+          setFulfillmentState('cancelled');
+          setFulfillmentMessage('Заказ не найден.');
           return;
-        }
-
-        if (payload.error === 'PAYMENT_NOT_CONFIRMED') {
-          setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('Оплата обрабатывается.');
-        } else if (
-          payload.status === 'SUPPLIER_PENDING'
-          || payload.error === 'FULFILLMENT_IN_PROGRESS'
-          || payload.error === 'ORDER_NOT_DELIVERED'
-        ) {
-          setFulfillmentState('processing');
-          setFulfillmentMessage('Получаем цифровой код.');
-        } else if (payload.error === 'ORDER_RESULT_DISABLED') {
-          setFulfillmentState('waiting_payment');
-          setFulfillmentMessage('После оплаты цифровой код будет отправлен на указанный e-mail.');
         } else {
           setFulfillmentState('error');
-          setFulfillmentMessage('Не удалось получить код автоматически. Напишите в поддержку с номером заказа.');
+          setFulfillmentMessage('Не удалось получить актуальный статус заказа. Не оплачивайте заказ повторно и обратитесь в поддержку.');
+          return;
         }
       } catch (_error) {
         if (!cancelled) {
@@ -795,7 +957,7 @@ export function App() {
       }
 
       if (!cancelled) {
-        timeoutId = window.setTimeout(checkResult, RESULT_POLL_INTERVAL_MS);
+        timeoutId = window.setTimeout(checkResult, ORDER_STATUS_POLL_INTERVAL_MS);
       }
     }
 
@@ -807,7 +969,7 @@ export function App() {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [digitalCodes.length, registeredOrder, resultRetryToken]);
+  }, [registeredOrder?.id, resultRetryToken]);
 
   useEffect(() => {
     if (visibleProducts.length === 0) return;
@@ -826,7 +988,6 @@ export function App() {
     setShowPaymentFallback(false);
     setFulfillmentState('idle');
     setFulfillmentMessage(null);
-    setDigitalCodes([]);
   }, [selectedProductId, violetCatalog, visibleProducts]);
 
   useEffect(() => {
@@ -839,7 +1000,6 @@ export function App() {
     setShowPaymentFallback(false);
     setFulfillmentState('idle');
     setFulfillmentMessage(null);
-    setDigitalCodes([]);
   }, [displayableSelectedProductOffers, selectedOffer, selectedProduct]);
 
   return (
@@ -1105,38 +1265,25 @@ export function App() {
               <span>Сумма: {formatRub(registeredOrder.amount / 100)}</span>
               <span>
                 Статус: {fulfillmentState === 'delivered'
-                  ? 'Код готов'
+                  ? 'Письмо отправлено'
+                  : fulfillmentState === 'email_pending'
+                    ? 'Письмо отправляется'
+                    : fulfillmentState === 'email_failed'
+                      ? 'Нужна помощь с доставкой'
                   : fulfillmentState === 'processing'
-                    ? 'Получаем цифровой код'
+                    ? 'Заказ обрабатывается'
                     : fulfillmentState === 'error'
-                      ? 'Не удалось получить код'
+                      ? 'Нужна помощь с заказом'
                       : 'Проверяем оплату'}
               </span>
               {fulfillmentMessage && <span>{fulfillmentMessage}</span>}
-              {digitalCodes.length > 0 && (
-                <div className="digital-code-box">
-                  <strong>Цифровой код</strong>
-                  {digitalCodes.map((code) => (
-                    <div className="digital-code-row" key={code}>
-                      <code>{code}</code>
-                      <button
-                        className="btn-link"
-                        type="button"
-                        onClick={() => void copyDigitalCode(code)}
-                      >
-                        Скопировать
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {fulfillmentState === 'error' && digitalCodes.length === 0 && (
+              {(fulfillmentState === 'error' || fulfillmentState === 'timeout') && (
                 <button
                   className="btn -accent"
                   type="button"
                   onClick={retryResultPolling}
                 >
-                  Не удалось получить код, повторить
+                  Проверить статус ещё раз
                 </button>
               )}
               {showPaymentFallback && paymentUrl && (
@@ -1177,4 +1324,10 @@ export function App() {
       </main>
     </div>
   );
+}
+
+export function App() {
+  const returnOrderId = getReturnOrderId();
+  if (returnOrderId) return <OrderStatusScreen orderId={returnOrderId} />;
+  return <StorefrontApp />;
 }

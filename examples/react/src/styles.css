@@ -440,18 +440,18 @@ button {
 .payment-info {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  margin: 12px 0 14px;
-  padding: 14px;
+  gap: 8px;
+  margin: 10px 0 12px;
+  padding: 11px;
   border: 1.5px solid rgba(249, 115, 22, 0.78);
   border-radius: 8px;
-  background: rgba(251, 146, 60, 0.15);
-  box-shadow: 0 14px 34px rgba(249, 115, 22, 0.16);
+  background: rgba(251, 146, 60, 0.075);
+  box-shadow: 0 8px 22px rgba(249, 115, 22, 0.09);
 }
 
 .payment-info__icon {
   padding-top: 1px;
-  font-size: 19px;
+  font-size: 15px;
   line-height: 1;
   pointer-events: none;
   user-select: none;
@@ -459,9 +459,9 @@ button {
 
 .payment-info strong {
   display: block;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
   color: #ffffff;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 900;
   line-height: 1.2;
 }
@@ -471,16 +471,21 @@ button {
   color: #ddd8ed;
   font-size: 13px;
   font-weight: 500;
-  line-height: 1.46;
+  line-height: 1.4;
 }
 
 .payment-info p + p {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .payment-info b {
   color: #f7efe7;
   font-weight: 800;
+}
+
+.payment-info__return {
+  color: #f4eadf;
+  font-weight: 750;
 }
 
 .total-box {

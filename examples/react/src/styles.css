@@ -66,13 +66,6 @@ button {
   box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.18);
 }
 
-.field-hint {
-  margin: -4px 0 14px;
-  color: #aaa5cf;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
 .btn {
   width: 100%;
   min-height: 48px;
@@ -442,6 +435,52 @@ button {
   font-size: 12px;
   font-weight: 750;
   line-height: 1.45;
+}
+
+.payment-info {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  margin: 12px 0 14px;
+  padding: 14px;
+  border: 1.5px solid rgba(249, 115, 22, 0.78);
+  border-radius: 8px;
+  background: rgba(251, 146, 60, 0.15);
+  box-shadow: 0 14px 34px rgba(249, 115, 22, 0.16);
+}
+
+.payment-info__icon {
+  padding-top: 1px;
+  font-size: 19px;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+.payment-info strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.payment-info p {
+  margin: 0;
+  color: #ddd8ed;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.46;
+}
+
+.payment-info p + p {
+  margin-top: 6px;
+}
+
+.payment-info b {
+  color: #f7efe7;
+  font-weight: 800;
 }
 
 .total-box {

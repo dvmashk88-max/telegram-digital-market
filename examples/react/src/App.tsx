@@ -1126,9 +1126,21 @@ function StorefrontApp() {
                 onChange={(e) => updateCustomerEmail(e.target.value)}
                 onBlur={() => setCustomerEmail(normalizedCustomerEmail)}
               />
-              <p className="field-hint">
-                После оплаты цифровой код будет отправлен на этот адрес. Если письмо не пришло в течение нескольких минут, проверьте папку “Спам”.
-              </p>
+              <div className="payment-info" role="note" aria-labelledby="payment-info-title">
+                <span className="payment-info__icon" aria-hidden="true">⚠️</span>
+                <div>
+                  <strong id="payment-info-title">После оплаты</strong>
+                  <p>Код будет отправлен на указанный вами e-mail.</p>
+                  <p>Обычно письмо приходит в течение <b>3–5 минут</b>.</p>
+                  <p>
+                    Если письма нет, проверьте папки <b>«Входящие»</b>, <b>«Спам»</b> и <b>«Рассылки»</b>.
+                  </p>
+                  <p>
+                    После оплаты вернитесь в <b>MAX</b> и снова откройте магазин — на стартовой странице
+                    появится подтверждение отправки заказа.
+                  </p>
+                </div>
+              </div>
             </>
           )}
 

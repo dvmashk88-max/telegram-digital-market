@@ -1,33 +1,37 @@
-# MAX Digital Market Backend
+# Telegram Digital Market Backend
 
-Express backend for the React storefront.
+Express backend for the Telegram Mini App storefront.
 
-## Endpoints
+## Telegram endpoints
 
-- `GET /health` — liveness probe.
-- `GET /config.json` — frontend config from the built static directory.
-- `GET /api/fazercards/giftcards` — FazerCards gift card proxy.
-- `GET /api/fazercards/violet-catalog` — normalized catalog used by the storefront.
-- `GET /api/max/status` — MAX bot configuration status without exposing the token.
-- `POST /api/max/webhook` — MAX Bot API webhook endpoint.
-- `GET /api/max/webhook` — webhook URL helper.
+- `GET /api/telegram/status` — non-secret configuration status.
+- `POST /api/telegram/webhook` — Bot API webhook protected by
+  `X-Telegram-Bot-Api-Secret-Token`.
+- `GET /api/public-config` — public, non-secret frontend configuration.
 
-## Environment
+The bot handles `/start` only in private chats and sends a Telegram `web_app`
+button. Checkout accepts raw Mini App `initData`, validates its HMAC and age on
+the server, and derives `telegram_user_id` only from the signed user object.
 
-All environment variables are read in the root `config.mjs`.
+## Supplier safety lock
 
-- `FAZERCARDS_API_BASE`
-- `FAZERCARDS_API_KEY`
-- `MAX_API_BASE`
-- `MAX_BOT_TOKEN`
-- `PORT` optional, defaults to `3351`.
-- `ALLOWED_ORIGIN` optional, defaults to `*`.
-- `STATIC_DIR` optional, points to the built React app.
+`fazercards-ordering.mjs` contains a hard code lock next to the only supplier
+order POST. The following paths cannot create a supplier order while it is on:
 
-The webhook URL for Railway is:
+- automatic fulfillment;
+- `POST /api/orders/:id/fulfill`;
+- `POST /api/fazercards/giftcards/order`;
+- background reconciliation;
+- direct use of the supplier-order helper.
 
-`https://max-bot-production-6049.up.railway.app/api/max/webhook`
+Read-only catalog and status requests remain available.
 
-To register the webhook using Railway environment variables, run:
+## Release-only commands
 
-`railway run npm run max:set-webhook`
+```bash
+npm run db:migrate
+npm run telegram:set-webhook
+```
+
+Do not run either command until the database migration and public webhook URL
+are approved.

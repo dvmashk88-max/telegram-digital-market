@@ -1,6 +1,11 @@
-# MAX Digital Market React App
+# Telegram Digital Market Mini App
 
-Vite + React storefront for Telegram, Steam, gift cards, and game top-ups.
+Vite + React storefront designed to open from a Telegram bot `web_app` button.
+
+The official Telegram Web Apps SDK is loaded before the frontend bundle. The
+app calls `Telegram.WebApp.ready()` and `expand()`, sends raw `initData` to the
+backend during checkout, and uses `Telegram.WebApp.openLink()` for the external
+Alfa payment page with a normal-browser fallback.
 
 ```bash
 npm install
@@ -8,4 +13,5 @@ npm run dev
 npm run build
 ```
 
-The app loads live catalog data from `/api/fazercards/violet-catalog` when served by the backend and falls back to the local catalog shape when the upstream data is unavailable.
+Catalog browsing works in a regular browser. Checkout requires valid Telegram
+Mini App `initData` and is rejected when the site is opened directly.

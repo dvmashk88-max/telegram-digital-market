@@ -1,7 +1,7 @@
 {
-  "name": "max-digital-market",
+  "name": "telegram-digital-market",
   "version": "1.2.0",
-  "description": "MAX Digital Market storefront",
+  "description": "Telegram Digital Market storefront",
   "keywords": [
     "example"
   ],
@@ -14,9 +14,9 @@
     "check:violet-pricing-all": "node scripts/check-violet-pricing-all.mjs",
     "check:violet-ru-pricing": "node scripts/check-violet-ru-pricing.mjs",
     "db:migrate": "node examples/backend-node/scripts/migrate.mjs",
-    "max:set-webhook": "node scripts/set-max-webhook.mjs",
+    "telegram:set-webhook": "node scripts/set-telegram-webhook.mjs",
     "start": "NODE_EXTRA_CA_CERTS=certs/russian-trusted-ca.pem STATIC_DIR=examples/react/dist node examples/backend-node/server.mjs",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test examples/backend-node/*.test.mjs"
   },
   "dependencies": {
     "express": "^4.21.0",

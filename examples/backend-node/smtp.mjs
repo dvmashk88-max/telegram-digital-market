@@ -18,7 +18,6 @@ export function getSmtpTransportOptions() {
     port: SMTP_PORT,
     secure: SMTP_PORT === 465,
     requireTLS: SMTP_PORT === 587,
-    name: 'max-bot-production-6049.up.railway.app',
     dnsTimeout: SMTP_DNS_TIMEOUT_MS,
     connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
     greetingTimeout: SMTP_GREETING_TIMEOUT_MS,

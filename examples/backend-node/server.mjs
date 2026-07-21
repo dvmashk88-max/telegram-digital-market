@@ -17,12 +17,20 @@ import {
   SMTP_PORT,
   SMTP_USER,
   STATIC_DIR as STATIC_DIR_FROM_ENV,
+  TELEGRAM_BOT_TOKEN,
+  TELEGRAM_SUPPORT_URL,
+  TELEGRAM_WEBHOOK_SECRET,
 } from '../../config.mjs';
 import {
-  getMaxStatus,
-  handleMaxWebhookPayload,
-  MAX_WEBHOOK_URL,
-} from './max-bot.mjs';
+  getTelegramStatus,
+  handleTelegramWebhookPayload,
+} from './telegram-bot.mjs';
+import { isValidTelegramWebhookSecret, validateTelegramInitData } from './telegram-auth.mjs';
+import {
+  createFazerGiftcardOrder,
+  getFazerCardsOrderingDisabledResponse,
+  isFazerCardsOrderingEnabled,
+} from './fazercards-ordering.mjs';
 import { isDatabaseConfigured, query, withTransaction } from './db.mjs';
 import { createSmtpTransport } from './smtp.mjs';
 
@@ -590,7 +598,7 @@ function normalizeTelegramPremium(payload) {
 function buildOrderReturnUrl(orderId) {
   if (!ALFA_RETURN_URL) throw new Error('ALFA_RETURN_URL_MISSING');
   const url = new URL(ALFA_RETURN_URL);
-  url.searchParams.set('mdmOrderId', orderId);
+  url.searchParams.set('orderId', orderId);
   return url.toString();
 }
 
@@ -637,36 +645,6 @@ async function fetchAlfaOrderStatus(orderId) {
   return response.json();
 }
 
-async function createFazerGiftcardOrder({
-  categoryId,
-  cardId,
-  quantity,
-  idempotencyKey,
-}) {
-  const response = await fetch(`${FAZERCARDS_API_BASE.replace(/\/$/, '')}/api/v2/giftcards/order`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-API-Key': FAZERCARDS_API_KEY,
-      'Idempotency-Key': idempotencyKey,
-    },
-    body: JSON.stringify({
-      category_id: categoryId,
-      card_id: cardId,
-      quantity,
-    }),
-    signal: AbortSignal.timeout(FAZER_REQUEST_TIMEOUT_MS),
-  });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
-  return {
-    ok: response.ok,
-    status: response.status,
-    payload,
-  };
-}
-
 async function fetchFazerOrder(orderId) {
   const response = await fetch(`${FAZERCARDS_API_BASE.replace(/\/$/, '')}/api/v2/orders/${encodeURIComponent(orderId)}`, {
     headers: {
@@ -690,7 +668,7 @@ function generateOrderNumber() {
     .replace(/\D/g, '')
     .slice(0, 14);
   const suffix = randomBytes(3).toString('hex').toUpperCase();
-  return `MAX-${timestamp}-${suffix}`;
+  return `TDM-${timestamp}-${suffix}`;
 }
 
 function formatOrder(row, options = {}) {
@@ -722,7 +700,7 @@ function formatOrder(row, options = {}) {
 }
 
 async function createStoredOrder({
-  maxUserId,
+  telegramUserId,
   customerEmail,
   categoryId,
   cardId,
@@ -733,13 +711,13 @@ async function createStoredOrder({
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const orderNumber = generateOrderNumber();
-    const idempotencyKey = `max-digital-market:${orderNumber}`;
+    const idempotencyKey = `telegram-digital-market:${orderNumber}`;
 
     try {
       const result = await query(
         `INSERT INTO orders (
           order_number,
-          max_user_id,
+          telegram_user_id,
           customer_email,
           category_id,
           card_id,
@@ -753,7 +731,7 @@ async function createStoredOrder({
         RETURNING *`,
         [
           orderNumber,
-          maxUserId,
+          telegramUserId,
           customerEmail,
           categoryId,
           cardId,
@@ -1215,6 +1193,12 @@ async function fulfillOrderById(id) {
     }
   }
 
+  // Status reads for an already-created supplier order are safe above. Every
+  // path that could create a new supplier order stops here while the hard lock is on.
+  if (!isFazerCardsOrderingEnabled()) {
+    return getFazerCardsOrderingDisabledResponse();
+  }
+
   let alfaPayload;
 
   try {
@@ -1360,12 +1344,9 @@ async function fulfillOrderById(id) {
     };
   }
 
-  if (process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true') {
+  if (!isFazerCardsOrderingEnabled()) {
     await resetSupplierNotStarted(order.id);
-    return {
-      responseStatus: 503,
-      body: { error: 'FAZER_ORDERING_DISABLED' },
-    };
+    return getFazerCardsOrderingDisabledResponse();
   }
 
   let fazerResult;
@@ -1416,15 +1397,18 @@ async function fulfillOrderById(id) {
 }
 
 async function loadFulfillmentReconcileCandidates() {
+  const supplierStatuses = isFazerCardsOrderingEnabled()
+    ? ['not_started', 'ordered', 'failed']
+    : ['ordered'];
   const result = await query(
     `SELECT id
       FROM orders
       WHERE alfa_order_id IS NOT NULL
         AND payment_status IN ('registered', 'pending', 'paid')
-        AND supplier_status IN ('not_started', 'ordered', 'failed')
+        AND supplier_status = ANY($2::text[])
       ORDER BY created_at ASC
       LIMIT $1`,
-    [FULFILLMENT_RECONCILE_BATCH_SIZE],
+    [FULFILLMENT_RECONCILE_BATCH_SIZE, supplierStatuses],
   );
   return result.rows.map((row) => row.id);
 }
@@ -1432,7 +1416,10 @@ async function loadFulfillmentReconcileCandidates() {
 let fulfillmentReconcileRunning = false;
 
 async function reconcilePaidOrders() {
-  if (fulfillmentReconcileRunning || !isDatabaseConfigured()) return;
+  if (
+    fulfillmentReconcileRunning
+    || !isDatabaseConfigured()
+  ) return;
   fulfillmentReconcileRunning = true;
 
   try {
@@ -1468,22 +1455,31 @@ app.use((req, res, next) => {
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-app.get('/api/max/status', (_req, res) => {
-  res.json(getMaxStatus());
+app.get('/api/telegram/status', (_req, res) => {
+  res.json(getTelegramStatus());
 });
 
-app.post('/api/max/webhook', express.json({ limit: '128kb' }), async (req, res) => {
+app.post('/api/telegram/webhook', express.json({ limit: '128kb' }), async (req, res) => {
+  const suppliedSecret = req.get('X-Telegram-Bot-Api-Secret-Token') ?? '';
+  if (!isValidTelegramWebhookSecret(suppliedSecret, TELEGRAM_WEBHOOK_SECRET)) {
+    return res.status(401).json({ ok: false, error: 'INVALID_TELEGRAM_WEBHOOK_SECRET' });
+  }
+
   try {
-    const result = await handleMaxWebhookPayload(req.body);
-    res.status(200).json(result);
+    const result = await handleTelegramWebhookPayload(req.body);
+    return res.status(200).json(result);
   } catch (error) {
-    console.error('[max] webhook error', error);
-    res.status(500).json({ ok: false, error: 'MAX_WEBHOOK_FAILURE' });
+    console.error('[telegram] webhook error', {
+      message: error.message,
+      status: error.status ?? null,
+      description: error.description ?? null,
+    });
+    return res.status(500).json({ ok: false, error: 'TELEGRAM_WEBHOOK_FAILURE' });
   }
 });
 
-app.get('/api/max/webhook', (_req, res) => {
-  res.json({ ok: true, webhookUrl: MAX_WEBHOOK_URL });
+app.get('/api/public-config', (_req, res) => {
+  res.json({ telegramSupportUrl: TELEGRAM_SUPPORT_URL || null });
 });
 
 app.get('/config.json', (_req, res) => {
@@ -1580,6 +1576,10 @@ app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), asy
     return res.status(400).json({ error: 'INVALID_QUANTITY' });
   }
 
+  if (!isFazerCardsOrderingEnabled()) {
+    return res.status(503).json({ error: 'FAZERCARDS_ORDERING_DISABLED' });
+  }
+
   if (!FAZERCARDS_API_BASE || !FAZERCARDS_API_KEY || !ALFA_API_BASE || !ALFA_USERNAME || !ALFA_PASSWORD) {
     return res.status(500).json({ error: 'PAYMENT_CONFIG_MISSING' });
   }
@@ -1607,15 +1607,11 @@ app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), asy
       });
     }
 
-    if (process.env.ENABLE_FAZER_GIFTCARD_ORDERS !== 'true') {
-      return res.status(503).json({ error: 'FAZER_ORDERING_DISABLED' });
-    }
-
     const fazerResult = await createFazerGiftcardOrder({
       categoryId: trimmedCategoryId,
       cardId: trimmedCardId,
       quantity,
-      idempotencyKey: `max-digital-market:${trimmedAlfaOrderId}`,
+      idempotencyKey: `telegram-digital-market:${trimmedAlfaOrderId}`,
     });
 
     if (!fazerResult.ok || fazerResult.payload?.ok !== true) {
@@ -1640,10 +1636,14 @@ app.post('/api/fazercards/giftcards/order', express.json({ limit: '16kb' }), asy
 });
 
 app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, res) => {
-  const { maxUserId, customerEmail, categoryId, cardId, quantity } = req.body ?? {};
+  const { telegramInitData, customerEmail, categoryId, cardId, quantity } = req.body ?? {};
 
-  if (maxUserId !== undefined && (typeof maxUserId !== 'string' || maxUserId.trim().length > 255)) {
-    return res.status(400).json({ error: 'INVALID_MAX_USER_ID' });
+  let telegramIdentity;
+  try {
+    telegramIdentity = validateTelegramInitData(telegramInitData, TELEGRAM_BOT_TOKEN);
+  } catch (error) {
+    const status = error.code === 'TELEGRAM_BOT_NOT_CONFIGURED' ? 500 : 401;
+    return res.status(status).json({ error: error.code ?? 'INVALID_TELEGRAM_INIT_DATA' });
   }
 
   const normalizedCustomerEmail = normalizeCustomerEmail(customerEmail);
@@ -1675,7 +1675,6 @@ app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, re
     return res.status(500).json({ error: 'ORDER_CONFIG_MISSING' });
   }
 
-  const trimmedMaxUserId = maxUserId?.trim() || null;
   const trimmedCategoryId = categoryId.trim();
   const trimmedCardId = cardId.trim();
 
@@ -1704,7 +1703,7 @@ app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, re
     const amountKopecks = priceRub * quantity * 100;
 
     storedOrder = await createStoredOrder({
-      maxUserId: trimmedMaxUserId,
+      telegramUserId: telegramIdentity.telegramUserId,
       customerEmail: normalizedCustomerEmail,
       categoryId: trimmedCategoryId,
       cardId: trimmedCardId,
@@ -1725,7 +1724,7 @@ app.post('/api/orders/register', express.json({ limit: '16kb' }), async (req, re
     alfaPayload = await registerAlfaOrder({
       orderNumber: storedOrder.order_number,
       amount: storedOrder.amount,
-      description: `MAX Digital Market order ${storedOrder.order_number}`,
+      description: `Telegram Digital Market order ${storedOrder.order_number}`,
       returnUrl: buildOrderReturnUrl(storedOrder.id),
     });
 
@@ -1781,6 +1780,10 @@ app.post('/api/orders/:id/fulfill', async (req, res) => {
 
   if (!isValidUuid(id)) {
     return res.status(400).json({ error: 'INVALID_ORDER_ID' });
+  }
+
+  if (!isFazerCardsOrderingEnabled()) {
+    return res.status(503).json({ error: 'FAZERCARDS_ORDERING_DISABLED' });
   }
 
   const processed = await fulfillOrderById(id);
@@ -1973,8 +1976,8 @@ app.post('/api/payment/status', express.json({ limit: '16kb' }), async (req, res
 app.get('/api/payment/success', (req, res) => {
   const redirectUrl = new URL('/', `${req.protocol}://${req.get('host')}`);
   redirectUrl.searchParams.set('payment', 'success');
-  if (typeof req.query.mdmOrderId === 'string' && req.query.mdmOrderId.trim() !== '') {
-    redirectUrl.searchParams.set('mdmOrderId', req.query.mdmOrderId.trim());
+  if (typeof req.query.orderId === 'string' && req.query.orderId.trim() !== '') {
+    redirectUrl.searchParams.set('orderId', req.query.orderId.trim());
   }
   res.redirect(303, `${redirectUrl.pathname}${redirectUrl.search}`);
 });

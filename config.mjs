@@ -3,8 +3,11 @@ export const PORT = Number.parseInt(process.env.PORT ?? '3351', 10);
 export const FAZERCARDS_API_BASE = process.env.FAZERCARDS_API_BASE ?? '';
 export const FAZERCARDS_API_KEY = process.env.FAZERCARDS_API_KEY ?? '';
 
-export const MAX_API_BASE = process.env.MAX_API_BASE ?? '';
-export const MAX_BOT_TOKEN = process.env.MAX_BOT_TOKEN ?? '';
+export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
+export const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? '';
+export const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL ?? '';
+export const TELEGRAM_WEBAPP_URL = process.env.TELEGRAM_WEBAPP_URL ?? PUBLIC_APP_URL;
+export const TELEGRAM_SUPPORT_URL = process.env.TELEGRAM_SUPPORT_URL ?? '';
 
 export const ALFA_API_BASE = process.env.ALFA_API_BASE ?? '';
 export const ALFA_USERNAME = process.env.ALFA_USERNAME ?? '';

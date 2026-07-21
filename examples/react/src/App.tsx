@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  getTelegramInitData,
+  initializeTelegramWebApp,
+  openTelegramExternalLink,
+} from './telegram-webapp';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -97,10 +102,13 @@ const ORDER_RESULT_ENDPOINT =
   window.location.hostname === 'localhost'
     ? 'http://localhost:3351/api/orders'
     : `${window.location.origin}/api/orders`;
+const PUBLIC_CONFIG_ENDPOINT =
+  window.location.hostname === 'localhost'
+    ? 'http://localhost:3351/api/public-config'
+    : `${window.location.origin}/api/public-config`;
 const APP_DISPLAY_NAME = 'Маркет цифровых товаров';
-const CHECKOUT_STORAGE_KEY = 'max-digital-market:checkout-order';
+const CHECKOUT_STORAGE_KEY = 'telegram-digital-market:checkout-order';
 const CHECKOUT_SUCCESS_CLEAR_DELAY_MS = 10 * 60 * 1000;
-const SUPPORT_URL = 'https://max.ru/join/hNMlgpXt3un26lzqAYRmzbx7JX7Du4voOSLOBQepVwQ';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CATEGORIES: Category[] = [
@@ -433,6 +441,10 @@ function getOrderRegisterErrorMessage(error: string | undefined): string {
     INVALID_CUSTOMER_EMAIL: 'Укажите корректный e-mail',
     ALFA_REGISTER_FAILED: 'Банк отклонил создание платежа',
     ALFA_REQUEST_FAILED: 'Не удалось связаться с банком',
+    TELEGRAM_AUTH_REQUIRED: 'Откройте магазин через кнопку Telegram-бота',
+    INVALID_TELEGRAM_INIT_DATA: 'Не удалось подтвердить Telegram-сессию. Откройте магазин заново',
+    INVALID_TELEGRAM_USER_ID: 'Не удалось определить Telegram-пользователя',
+    TELEGRAM_INIT_DATA_EXPIRED: 'Telegram-сессия истекла. Откройте магазин заново',
   };
   return error ? messages[error] ?? 'Не удалось создать платёж' : 'Не удалось создать платёж';
 }
@@ -476,7 +488,7 @@ function getStoredCheckoutRemainingMs(storedCheckout: StoredCheckoutOrder) {
 
 function getReturnOrderId() {
   const params = new URLSearchParams(window.location.search);
-  const fromQuery = params.get('mdmOrderId');
+  const fromQuery = params.get('orderId');
   if (fromQuery) return fromQuery;
 
   const pathMatch = window.location.pathname.match(/^\/order\/([0-9a-f-]{36})\/?$/i);
@@ -502,13 +514,30 @@ function OrderSuccessView({
   showAutoRemovalNote?: boolean;
   onReturnToStore: () => void;
 }) {
+  const [supportUrl, setSupportUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(PUBLIC_CONFIG_ENDPOINT, { headers: { Accept: 'application/json' } })
+      .then((response) => response.ok ? response.json() : null)
+      .then((config: { telegramSupportUrl?: string | null } | null) => {
+        if (!cancelled && typeof config?.telegramSupportUrl === 'string') {
+          setSupportUrl(config.telegramSupportUrl);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="app order-page">
       <main className="order-status">
         <div className="order-status__mark" aria-hidden="true">
           <span>✓</span>
         </div>
-        <p className="eyebrow">MAX Digital Market</p>
+        <p className="eyebrow">Telegram Digital Market</p>
         <h1>✅ Заказ выполнен</h1>
         <p className="order-status__body">
           {`Код отправлен на:\n\n${email}\n\nПроверьте папки:\n\n• Входящие\n\n• Спам\n\n• Рассылки`}
@@ -526,9 +555,11 @@ function OrderSuccessView({
           >
             🛒 Вернуться в магазин
           </button>
-          <a className="btn -secondary" href={SUPPORT_URL} target="_blank" rel="noreferrer">
-            🛟 Поддержка
-          </a>
+          {supportUrl && (
+            <a className="btn -secondary" href={supportUrl} target="_blank" rel="noreferrer">
+              🛟 Поддержка
+            </a>
+          )}
         </div>
       </main>
     </div>
@@ -830,10 +861,16 @@ function StorefrontApp() {
     setOrderRegistering(true);
 
     try {
+      const telegramInitData = getTelegramInitData();
+      if (!telegramInitData) {
+        setOrderError('Откройте магазин через кнопку Telegram-бота');
+        return;
+      }
       const response = await fetch(ORDER_REGISTER_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          telegramInitData,
           customerEmail: normalizedCustomerEmail,
           categoryId,
           cardId,
@@ -862,7 +899,7 @@ function StorefrontApp() {
       });
       setOrderStatus('idle');
 
-      const opened = window.open(payload.formUrl, '_blank', 'noopener,noreferrer');
+      const opened = openTelegramExternalLink(payload.formUrl);
       if (!opened) setShowPaymentFallback(true);
     } catch (_error) {
       setOrderError('Не удалось создать платёж');
@@ -911,7 +948,7 @@ function StorefrontApp() {
     <div className="app">
       <header className="violet-header">
         <div>
-          <div className="eyebrow">MAX Digital Market</div>
+          <div className="eyebrow">Telegram Digital Market</div>
           <h1 className="violet-title">{APP_DISPLAY_NAME}</h1>
           <p className="violet-copy">
             Витрина цифровых товаров для Telegram, Steam, подарочных карт
@@ -1136,7 +1173,7 @@ function StorefrontApp() {
                     Если письма нет — проверьте папки <b>«Входящие»</b>, <b>«Спам»</b> и <b>«Рассылки»</b>.
                   </p>
                   <p className="payment-info__return">
-                    ↩️ После оплаты снова откройте магазин в <b>MAX</b> — здесь появится подтверждение заказа.
+                    ↩️ После оплаты снова откройте магазин в <b>Telegram</b> — здесь появится подтверждение заказа.
                   </p>
                 </div>
               </div>
@@ -1183,7 +1220,7 @@ function StorefrontApp() {
                 <button
                   className="btn -accent"
                   type="button"
-                  onClick={() => window.open(paymentUrl, '_blank', 'noopener,noreferrer')}
+                  onClick={() => openTelegramExternalLink(paymentUrl)}
                 >
                   Перейти к оплате
                 </button>
@@ -1234,6 +1271,10 @@ export function App() {
   });
   const handleFallbackToStore = useCallback(() => {
     setShowStorefront(true);
+  }, []);
+
+  useEffect(() => {
+    initializeTelegramWebApp();
   }, []);
 
   if (returnOrderId && !showStorefront) {

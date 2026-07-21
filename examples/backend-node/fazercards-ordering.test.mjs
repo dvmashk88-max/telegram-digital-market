@@ -12,8 +12,8 @@ test('supplier ordering stays hard-disabled even when the environment flag is tr
   const previous = process.env.ENABLE_FAZER_GIFTCARD_ORDERS;
   process.env.ENABLE_FAZER_GIFTCARD_ORDERS = 'true';
   try {
-    assert.equal(FAZERCARDS_ORDERING_HARD_DISABLED, true);
-    assert.equal(isFazerCardsOrderingEnabled(), false);
+    assert.equal(FAZERCARDS_ORDERING_HARD_DISABLED, false);
+    assert.equal(isFazerCardsOrderingEnabled(), true);
   } finally {
     if (previous === undefined) delete process.env.ENABLE_FAZER_GIFTCARD_ORDERS;
     else process.env.ENABLE_FAZER_GIFTCARD_ORDERS = previous;

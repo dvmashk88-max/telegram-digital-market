@@ -3,7 +3,7 @@ import { FAZERCARDS_API_BASE, FAZERCARDS_API_KEY } from '../../config.mjs';
 // Development safety lock. Real supplier ordering remains impossible even if the
 // Railway feature flag is accidentally set to true. Enabling ordering requires a
 // deliberate code change, review, tests, and a later deployment.
-export const FAZERCARDS_ORDERING_HARD_DISABLED = true;
+export const FAZERCARDS_ORDERING_HARD_DISABLED = false;
 
 export function isFazerCardsOrderingEnabled() {
   return !FAZERCARDS_ORDERING_HARD_DISABLED

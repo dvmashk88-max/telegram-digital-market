@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
 import {
   PUBLIC_APP_URL,
   TELEGRAM_BOT_TOKEN,
@@ -7,6 +10,11 @@ import {
 } from '../../config.mjs';
 
 export const TELEGRAM_WEBHOOK_PATH = '/api/telegram/webhook';
+export const TELEGRAM_START_SUPPORT_URL = 'https://t.me/+ZkPkMZrcOTM3MDIy';
+
+const TELEGRAM_START_LOGO_PATH = fileURLToPath(
+  new URL('./assets/telegram-start-logo.png', import.meta.url),
+);
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
@@ -39,13 +47,16 @@ export function getTelegramStatus() {
 }
 
 export async function callTelegramApi(method, payload, { fetchImpl = fetch } = {}) {
+  const isFormData = payload instanceof FormData;
   const response = await fetchImpl(getTelegramApiUrl(method), {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+    headers: isFormData
+      ? { Accept: 'application/json' }
+      : {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+    body: isFormData ? payload : JSON.stringify(payload),
     signal: AbortSignal.timeout(10_000),
   });
   const body = await response.json().catch(() => null);
@@ -59,31 +70,75 @@ export async function callTelegramApi(method, payload, { fetchImpl = fetch } = {
 }
 
 export function buildTelegramStartMessage() {
-  const lines = [
-    '🛒 Добро пожаловать в Telegram Digital Market!',
+  return [
+    '👋 Добро пожаловать в «Маркет цифровых товаров»',
     '',
-    'Здесь можно выбрать цифровые коды и подарочные карты.',
-    'Во время разработки реальные покупки временно отключены.',
+    'Здесь вы можете быстро и безопасно приобрести цифровые товары:',
     '',
-    'Нажмите кнопку ниже, чтобы открыть магазин.',
-  ];
-  if (TELEGRAM_SUPPORT_URL) lines.splice(-2, 0, `Поддержка: ${TELEGRAM_SUPPORT_URL}`, '');
-  return lines.join('\n');
+    '🎮 Игровые карты и пополнение баланса',
+    '',
+    '🍏 Подарочные карты Apple',
+    '',
+    '💬 Telegram Stars и другие цифровые сервисы',
+    '',
+    'Каталог постоянно расширяется.',
+    '',
+    '🚀 Нажмите кнопку ниже, чтобы открыть магазин.',
+    '',
+    '⸻',
+    '',
+    '📩 После оплаты',
+    '',
+    'После успешной оплаты:',
+    '',
+    '✅ заказ обрабатывается автоматически;',
+    '',
+    '✅ цифровой код приходит на указанную при покупке электронную почту;',
+    '',
+    '✅ все заказы обрабатываются круглосуточно.',
+    '',
+    '⸻',
+    '',
+    '🛟 Поддержка',
+    '',
+    'Если возникли вопросы по оплате или получению заказа, обратитесь в группу поддержки:',
+    '',
+    `👉 ${TELEGRAM_START_SUPPORT_URL}`,
+    '',
+    '⸻',
+    '',
+    'Спасибо, что пользуетесь Маркетом цифровых товаров! 💜',
+  ].join('\n');
 }
 
-export async function sendTelegramStartMessage(chatId, options = {}) {
-  const webAppUrl = getTelegramWebAppUrl();
-  if (!webAppUrl) throw new Error('TELEGRAM_WEBAPP_URL_NOT_CONFIGURED');
-  return callTelegramApi('sendMessage', {
-    chat_id: chatId,
-    text: buildTelegramStartMessage(),
-    reply_markup: {
-      inline_keyboard: [[{
+export function buildTelegramStartReplyMarkup(webAppUrl) {
+  return {
+    inline_keyboard: [
+      [{
         text: '🛍 Открыть магазин',
         web_app: { url: webAppUrl },
-      }]],
-    },
-  }, options);
+      }],
+      [{
+        text: '🛟 Группа поддержки',
+        url: TELEGRAM_START_SUPPORT_URL,
+      }],
+    ],
+  };
+}
+
+export async function sendTelegramStartMessage(chatId, {
+  webAppUrl = getTelegramWebAppUrl(),
+  callTelegramApiImpl = callTelegramApi,
+  ...apiOptions
+} = {}) {
+  if (!webAppUrl) throw new Error('TELEGRAM_WEBAPP_URL_NOT_CONFIGURED');
+  const form = new FormData();
+  const logo = await readFile(TELEGRAM_START_LOGO_PATH);
+  form.set('chat_id', String(chatId));
+  form.set('caption', buildTelegramStartMessage());
+  form.set('reply_markup', JSON.stringify(buildTelegramStartReplyMarkup(webAppUrl)));
+  form.set('photo', new Blob([logo], { type: 'image/png' }), 'telegram-start-logo.png');
+  return callTelegramApiImpl('sendPhoto', form, apiOptions);
 }
 
 export async function handleTelegramWebhookPayload(
